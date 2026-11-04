@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { GameContext } from './context';
 
 export type EnemyKind = 'agent' | 'hacker' | 'brute';
@@ -21,9 +22,6 @@ const SPECS: Record<EnemyKind, KindSpec> = {
 
 /** Geometries and materials are created once and shared by every enemy (no per-spawn allocations). */
 const RES = (() => {
-  const box = (w: number, h: number, d: number): THREE.BoxGeometry => new THREE.BoxGeometry(w, h, d);
-  const std = (color: number): THREE.MeshStandardMaterial =>
-    new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.85, envMapIntensity: 1.2 });
   const glow = (c: number, k: number): THREE.MeshBasicMaterial => new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k) });
   const glowNormal = {} as Record<EnemyKind, THREE.MeshBasicMaterial>;
   const glowHot = {} as Record<EnemyKind, THREE.MeshBasicMaterial>;
@@ -31,30 +29,66 @@ const RES = (() => {
     glowNormal[k] = glow(SPECS[k].color, 3);
     glowHot[k] = glow(0xffffff, 5);
   }
+
+  /** Bakes a part into world-of-enemy space: optional rotation, scale, offset and a flat vertex colour. */
+  const part = (geo: THREE.BufferGeometry, x: number, y: number, z: number, color: number, scale = 1, rotX = 0): THREE.BufferGeometry => {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    if (rotX) g.rotateX(rotX);
+    if (scale !== 1) g.scale(scale, scale, scale);
+    g.translate(x, y, z);
+    const n = g.attributes.position.count;
+    const c = new THREE.Color(color);
+    const arr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    g.deleteAttribute('uv');
+    return g;
+  };
+  const box = (w: number, h: number, d: number): THREE.BoxGeometry => new THREE.BoxGeometry(w, h, d);
+
+  /** One body mesh (vertex-coloured) and one glow mesh per kind: 2 draw calls per enemy instead of ~14. */
+  const build = (kind: EnemyKind): { body: THREE.BufferGeometry; glow: THREE.BufferGeometry } => {
+    const DARK = 0x15161f;
+    const SUIT = kind === 'brute' ? 0x261910 : 0x1b1b28;
+    if (kind === 'hacker') {
+      return {
+        body: mergeGeometries([part(new THREE.ConeGeometry(0.7, 1.1, 6), 0, 1.0, 0, SUIT, 1, Math.PI)])!,
+        glow: mergeGeometries([
+          part(new THREE.OctahedronGeometry(0.55, 0), 0, 1.4, 0, 0xffffff),
+          part(new THREE.TorusGeometry(0.85, 0.035, 6, 20), 0, 1.4, 0, 0xffffff, 1, Math.PI / 2),
+          part(new THREE.TorusGeometry(0.85, 0.035, 6, 20), 0, 1.4, 0, 0xffffff),
+        ])!,
+      };
+    }
+    const k = kind === 'brute' ? 1.65 : 1;
+    const body = [
+      part(box(0.8, 1.1, 0.5), 0, 1.3 * k, 0, SUIT, k),
+      part(box(0.46, 0.4, 0.46), 0, 2.05 * k, 0, DARK, k),
+      part(box(0.2, 0.9, 0.24), -0.55 * k, 1.3 * k, 0, DARK, k),
+      part(box(0.2, 0.9, 0.24), 0.55 * k, 1.3 * k, 0, DARK, k),
+      part(box(0.28, 0.85, 0.3), -0.2 * k, 0.42 * k, 0, DARK, k),
+      part(box(0.28, 0.85, 0.3), 0.2 * k, 0.42 * k, 0, DARK, k),
+    ];
+    if (kind === 'brute') {
+      body.push(part(box(0.5, 0.25, 0.6), -0.62 * k, 1.85 * k, 0, DARK, k), part(box(0.5, 0.25, 0.6), 0.62 * k, 1.85 * k, 0, DARK, k));
+    }
+    return {
+      body: mergeGeometries(body)!,
+      glow: mergeGeometries([part(box(0.2, 0.9, 0.04), 0, 1.3 * k, 0.27 * k, 0xffffff, k), part(box(0.4, 0.1, 0.05), 0, 2.08 * k, 0.24 * k, 0xffffff, k)])!,
+    };
+  };
+
   return {
-    dark: std(0x15161f),
-    suit: std(0x1b1b28),
-    bruteSuit: std(0x261910),
+    bodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.35, metalness: 0.85, envMapIntensity: 1.2 }),
     flash: new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 3, 3) }),
     stunned: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 1.2, 2.5) }),
     glowNormal,
     glowHot,
+    geo: { agent: build('agent'), hacker: build('hacker'), brute: build('brute') } as Record<EnemyKind, { body: THREE.BufferGeometry; glow: THREE.BufferGeometry }>,
     barBgGeo: new THREE.PlaneGeometry(1.3, 0.14),
     barFillGeo: new THREE.PlaneGeometry(1, 0.1).translate(0.5, 0, 0),
     barBgMat: new THREE.MeshBasicMaterial({ color: 0x050510, transparent: true, opacity: 0.75, depthTest: false }),
     barFillMats: [0xff3355, 0xffc400, 0x33ff88].map((c) => new THREE.MeshBasicMaterial({ color: c, depthTest: false })),
-    g: {
-      torso: box(0.8, 1.1, 0.5),
-      strip: box(0.2, 0.9, 0.04),
-      head: box(0.46, 0.4, 0.46),
-      visor: box(0.4, 0.1, 0.05),
-      arm: box(0.2, 0.9, 0.24),
-      pad: box(0.5, 0.25, 0.6),
-      leg: box(0.28, 0.85, 0.3).translate(0, -0.42, 0),
-      core: new THREE.OctahedronGeometry(0.55, 0),
-      hood: new THREE.ConeGeometry(0.7, 1.1, 6),
-      ring: new THREE.TorusGeometry(0.85, 0.035, 6, 20),
-    },
   };
 })();
 
@@ -100,10 +134,8 @@ export class Enemy {
   private matState = 0;
 
   private model = new THREE.Group();
-  private bodyMeshes: Array<{ m: THREE.Mesh; mat: THREE.Material }> = [];
-  private glowMeshes: THREE.Mesh[] = [];
-  private legs: THREE.Mesh[] = [];
-  private core: THREE.Mesh | null = null;
+  private bodyMesh!: THREE.Mesh;
+  private glowMesh!: THREE.Mesh;
   private bar = new THREE.Group();
   private barFill: THREE.Mesh;
   private barLevel = -1;
@@ -134,43 +166,12 @@ export class Enemy {
     this.root.add(this.model, this.bar);
   }
 
-  private part(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, scale = 1, glow = false): THREE.Mesh {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    if (scale !== 1) m.scale.setScalar(scale);
-    m.castShadow = !glow;
-    this.model.add(m);
-    if (glow) this.glowMeshes.push(m);
-    else this.bodyMeshes.push({ m, mat });
-    return m;
-  }
-
   private build(): void {
-    const G = RES.g;
-    const gl = RES.glowNormal[this.kind];
-    if (this.kind === 'hacker') {
-      this.core = this.part(G.core, gl, 0, 1.4, 0, 1, true);
-      const hood = this.part(G.hood, RES.suit, 0, 1.0, 0);
-      hood.rotation.x = Math.PI;
-      const r1 = this.part(G.ring, gl, 0, 1.4, 0, 1, true);
-      r1.rotation.x = Math.PI / 2;
-      const r2 = this.part(G.ring, gl, 0, 1.4, 0, 1, true);
-      this.legs.push(r1, r2);
-      return;
-    }
-    const k = this.kind === 'brute' ? 1.65 : 1;
-    const suit = this.kind === 'brute' ? RES.bruteSuit : RES.suit;
-    this.part(G.torso, suit, 0, 1.3 * k, 0, k);
-    this.part(G.strip, gl, 0, 1.3 * k, 0.27 * k, k, true);
-    this.part(G.head, RES.dark, 0, 2.05 * k, 0, k);
-    this.part(G.visor, gl, 0, 2.08 * k, 0.24 * k, k, true);
-    this.part(G.arm, RES.dark, -0.55 * k, 1.3 * k, 0, k);
-    this.part(G.arm, RES.dark, 0.55 * k, 1.3 * k, 0, k);
-    if (this.kind === 'brute') {
-      this.part(G.pad, RES.dark, -0.62 * k, 1.85 * k, 0, k);
-      this.part(G.pad, RES.dark, 0.62 * k, 1.85 * k, 0, k);
-    }
-    for (const sx of [-0.2, 0.2]) this.legs.push(this.part(G.leg, RES.dark, sx * k, 0.85 * k, 0, k));
+    const g = RES.geo[this.kind];
+    this.bodyMesh = new THREE.Mesh(g.body, RES.bodyMat);
+    this.bodyMesh.castShadow = true;
+    this.glowMesh = new THREE.Mesh(g.glow, RES.glowNormal[this.kind]);
+    this.model.add(this.bodyMesh, this.glowMesh);
   }
 
   hit(dmg: number, knock: THREE.Vector3): void {
@@ -216,9 +217,8 @@ export class Enemy {
   private setMaterialState(state: number): void {
     if (state === this.matState) return;
     this.matState = state;
-    for (const b of this.bodyMeshes) b.m.material = state === 1 ? RES.flash : b.mat;
-    const gm = state === 0 ? RES.glowNormal[this.kind] : state === 3 ? RES.stunned : RES.glowHot[this.kind];
-    for (const g of this.glowMeshes) g.material = gm;
+    this.bodyMesh.material = state === 1 ? RES.flash : RES.bodyMat;
+    this.glowMesh.material = state === 0 ? RES.glowNormal[this.kind] : state === 3 ? RES.stunned : RES.glowHot[this.kind];
   }
 
   /** Visual update: hit flash, telegraph glow (shared material swaps), walk cycle, health bar billboard. */
@@ -233,20 +233,13 @@ export class Enemy {
     this.model.rotation.y = this.facing;
     if (this.kind === 'hacker') {
       this.pos.y = 0.35 + Math.sin(this.animT * 2.2) * 0.18;
-      if (this.core) {
-        this.core.rotation.y += dt * 2;
-        this.core.scale.setScalar(1 + wp * 0.7);
-      }
-      this.legs[0].rotation.z += dt * 2.4;
-      this.legs[1].rotation.x += dt * 3.1;
+      this.glowMesh.rotation.y += dt * 2;
+      this.glowMesh.scale.setScalar(1 + wp * 0.35);
     } else {
-      const sw = Math.sin(this.animT * 10) * moving * 0.8;
-      if (this.legs[0]) this.legs[0].rotation.x = sw;
-      if (this.legs[1]) this.legs[1].rotation.x = -sw;
-      this.model.position.y = Math.abs(Math.sin(this.animT * 10)) * 0.05 * moving;
+      this.model.position.y = Math.abs(Math.sin(this.animT * 10)) * 0.06 * moving;
       this.model.rotation.x = this.windup > 0 ? -0.35 * Math.min(1, wp * 2) : 0;
     }
-    this.model.rotation.z = this.stunT > 0 ? Math.sin(this.animT * 50) * 0.06 : 0;
+    this.model.rotation.z = this.stunT > 0 ? Math.sin(this.animT * 50) * 0.06 : this.kind === 'hacker' ? 0 : Math.sin(this.animT * 10) * 0.05 * moving;
 
     const frac = Math.max(0, this.hp / this.maxHp);
     this.barFill.scale.x = Math.max(0.001, frac * 1.2);

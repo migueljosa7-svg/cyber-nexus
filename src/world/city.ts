@@ -108,42 +108,74 @@ const BUILDING_FRAG_DECL = /* glsl */ `
   ${PICK_GLSL}
 `;
 
-// Procedural emissive windows (random flicker), neon trim and roof edges per instance: no textures, no extra geometry.
-const BUILDING_FRAG_PATTERN = /* glsl */ `
+// Urban facades: concrete panels and dark reflective glass with sparse warm/cool window points, lit shopfronts at
+// street level and neon tubes / roof edges only on some towers. Computed per pixel from instance scale: no textures.
+const BUILDING_FRAG_COLOR = /* glsl */ `
   float seedH = hash11(vSeed);
+  float style = floor(hash11(vSeed * 2.7) * 3.0);
   vec3 aN = abs(vNrm);
   vec3 nEmis = vec3(0.0);
   float winMask = 0.0;
+  vec3 baseCol = vec3(0.085, 0.09, 0.105);
+  float neonOn = step(0.72, hash11(vSeed * 5.3));
+  vec3 neonCol = pickColor(seedH * 0.9);
   if (aN.y < 0.5) {
     float uw = aN.x > 0.5 ? vScale.z : vScale.x;
     float u = (aN.x > 0.5 ? vLocal.z : vLocal.x) + uw * 0.5;
     float v = vLocal.y + vScale.y * 0.5;
-    vec2 wsz = vec2(1.15, 0.9);
-    vec2 cell = floor(vec2(u, v) / wsz);
-    vec2 f = fract(vec2(u, v) / wsz);
-    float w = smoothstep(0.12, 0.2, f.x) * (1.0 - smoothstep(0.8, 0.88, f.x)) * smoothstep(0.16, 0.26, f.y) * (1.0 - smoothstep(0.72, 0.82, f.y));
-    float rr = hash21(cell + vSeed * 17.0);
-    float lit = step(0.52, rr) * step(2.4, v);
-    float flickRate = step(0.9, hash21(cell + 3.0));
-    float flick = 1.0 - 0.85 * flickRate * step(0.0, sin(uTime * (5.0 + rr * 6.0) + rr * 40.0));
-    float dead = step(0.992, hash21(cell * 2.3 + floor(uTime * 0.7)));
-    vec3 wc = pickColor(hash21(cell * 1.7 + vSeed));
-    nEmis += wc * w * lit * flick * (1.0 - dead) * (0.4 + rr * 0.6);
-    winMask = w * (0.35 + 0.65 * lit);
+    bool glassy = style == 1.0 || (style == 2.0 && v < vScale.y * 0.45);
+    vec2 cs = vec2(2.7, 3.6);
+    vec2 cell = floor(vec2(u, v) / cs);
+    vec2 f = fract(vec2(u, v) / cs);
+    float pn = hash21(cell + vSeed);
+    baseCol *= 0.8 + 0.4 * pn;
+    float seam = clamp(step(f.x, 0.012) + step(0.988, f.x) + step(f.y, 0.02), 0.0, 1.0);
+    baseCol *= 1.0 - 0.4 * seam;
+    float wx = glassy ? 0.94 : 0.58;
+    float wy = glassy ? 0.86 : 0.5;
+    vec2 d = abs(f - vec2(0.5, 0.52));
+    float win = (1.0 - smoothstep(wx * 0.5 - 0.04, wx * 0.5, d.x)) * (1.0 - smoothstep(wy * 0.5 - 0.04, wy * 0.5, d.y));
+    win *= step(2.2, v);
+    baseCol = mix(baseCol, vec3(0.010, 0.016, 0.026), win);
+    winMask = win;
+    float rr = hash21(cell * 1.3 + vSeed * 17.0);
+    float lit = step(glassy ? 0.9 : 0.84, rr) * step(5.0, v);
+    float ct = hash21(cell + 9.1 + vSeed);
+    vec3 lc = ct < 0.55 ? vec3(1.0, 0.72, 0.42) : (ct < 0.88 ? vec3(0.55, 0.78, 1.0) : pickColor(hash21(cell + 3.3)));
+    float flick = 1.0 - 0.85 * step(0.94, hash21(cell + 3.0)) * step(0.0, sin(uTime * (5.0 + rr * 6.0) + rr * 40.0));
+    nEmis += lc * win * lit * flick * (0.9 + rr);
+    // Street-level shopfront on part of the towers.
+    float shop = step(0.45, seedH) * step(0.6, v) * (1.0 - step(3.4, v)) * step(0.35, min(u, uw - u));
+    float mull = step(0.07, fract(u / 2.2));
+    vec3 shopCol = seedH > 0.75 ? neonCol : vec3(1.0, 0.78, 0.5);
+    baseCol = mix(baseCol, vec3(0.02), shop);
+    nEmis += shopCol * shop * mull * 0.8;
+    // Neon tube along one vertical edge, a horizontal sign tube, and a lit parapet: strategic, not everywhere.
     float eU = min(u, uw - u);
-    float vertEdge = 1.0 - smoothstep(0.0, 0.09, eU);
-    float topEdge = 1.0 - smoothstep(0.0, 0.2, vScale.y - v);
-    float bf = fract((v + seedH * 14.0) / 14.0);
-    float band = step(0.45, hash11(vSeed * 3.1)) * smoothstep(0.0, 0.01, bf) * (1.0 - smoothstep(0.012, 0.024, bf));
-    vec3 ec = pickColor(seedH * 0.92);
-    nEmis += ec * (vertEdge * 0.9 + topEdge * 1.4 + band * 1.0) * 1.5;
+    nEmis += neonCol * neonOn * (1.0 - smoothstep(0.05, 0.1, eU)) * 2.4;
+    float hb = step(0.82, hash11(vSeed * 7.7));
+    float hv = vScale.y * (0.35 + 0.4 * hash11(vSeed * 1.9));
+    nEmis += pickColor(hash11(vSeed * 4.4) * 0.9) * hb * (1.0 - smoothstep(0.05, 0.12, abs(v - hv))) * step(0.5, eU) * 2.2;
+    float rb = step(0.58, hash11(vSeed * 3.9));
+    nEmis += neonCol * rb * (1.0 - smoothstep(0.0, 0.14, vScale.y - v)) * 1.6;
   } else if (vNrm.y > 0.5) {
+    baseCol = vec3(0.035);
     float eX = 0.5 * vScale.x - abs(vLocal.x);
     float eZ = 0.5 * vScale.z - abs(vLocal.z);
-    float e = 1.0 - smoothstep(0.0, 0.34, min(eX, eZ));
-    nEmis += pickColor(seedH * 0.92) * e * 2.2;
+    float rb = step(0.58, hash11(vSeed * 3.9));
+    nEmis += neonCol * rb * (1.0 - smoothstep(0.0, 0.2, min(eX, eZ))) * 1.8;
+    float rl = step(0.985, hash21(floor(vec2(vLocal.x, vLocal.z) * 0.6) + vSeed));
+    nEmis += vec3(1.0, 0.15, 0.12) * rl * 1.6 * step(sin(uTime * 3.0 + vSeed), 0.0);
   }
-  roughnessFactor = mix(roughnessFactor, 0.1, winMask);
+  diffuseColor.rgb = baseCol;
+`;
+
+const BUILDING_FRAG_ROUGH = /* glsl */ `
+  roughnessFactor = mix(0.82, 0.06, winMask);
+`;
+
+const BUILDING_FRAG_METAL = /* glsl */ `
+  metalnessFactor = mix(0.04, 0.92, winMask);
 `;
 
 // Streets are drawn analytically from world position: asphalt, sidewalks, lane paint, crosswalks, neon curbs.
@@ -162,7 +194,7 @@ const FLOOR_FRAG_COLOR = /* glsl */ `
   float inCarr = min(step(dx, 4.0) + step(dz, 4.0), 1.0);
   float inWalk = max(step(dx, 7.0), step(dz, 7.0)) * (1.0 - inCarr);
   float inLot = 1.0 - max(inCarr, inWalk);
-  diffuseColor.rgb = inCarr * vec3(0.012, 0.013, 0.02) + inWalk * vec3(0.05, 0.055, 0.075) + inLot * vec3(0.022, 0.026, 0.04);
+  diffuseColor.rgb = inCarr * vec3(0.012, 0.013, 0.02) + inWalk * vec3(0.062, 0.064, 0.072) + inLot * vec3(0.03, 0.032, 0.038);
 `;
 const FLOOR_FRAG_METAL = /* glsl */ `
   metalnessFactor *= mix(1.0, 0.12, inWalk + inLot);
@@ -186,9 +218,9 @@ const FLOOR_FRAG_EMIT = /* glsl */ `
   float curb = (step(abs(dx - 4.0), 0.07) * step(7.0, dz) + step(abs(dz - 4.0), 0.07) * step(7.0, dx));
   fe += uC1 * curb * 1.6;
   vec2 g2 = abs(fract(vWXZ / 2.0) - 0.5);
-  fe += uC1 * inWalk * step(0.482, max(g2.x, g2.y)) * 0.07;
+  fe += vec3(0.5, 0.55, 0.65) * inWalk * step(0.485, max(g2.x, g2.y)) * 0.025;
   vec2 g4 = abs(fract(vWXZ / 4.0) - 0.5);
-  fe += uC2 * inLot * step(0.488, max(g4.x, g4.y)) * 0.05;
+  fe += vec3(0.4, 0.45, 0.55) * inLot * step(0.49, max(g4.x, g4.y)) * 0.015;
   totalEmissiveRadiance += fe;
 `;
 
@@ -375,7 +407,9 @@ export class City {
         .replace('#include <begin_vertex>', `#include <begin_vertex>\n${BUILDING_VERT_MAIN}`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>\n${BUILDING_FRAG_DECL}`)
-        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${BUILDING_FRAG_PATTERN}`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n${BUILDING_FRAG_COLOR}`)
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${BUILDING_FRAG_ROUGH}`)
+        .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n${BUILDING_FRAG_METAL}`)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += nEmis;');
     };
     const unit = new THREE.BoxGeometry(1, 1, 1);
@@ -742,11 +776,11 @@ export class City {
           chunk.buildings.push({ x: lot.x, y: lot.h + 3, z: lot.z, sx: lot.w * 0.55, sy: 6, sz: lot.d * 0.55, seed: 1 + rnd() * 900 });
         }
         // Facade billboard facing the street (outer lots only).
-        if (rnd() < 0.36) {
+        if (rnd() < 0.13) {
           const face = i === 0 ? [-1, 0] : i === 2 ? [1, 0] : j === 0 ? [0, -1] : j === 2 ? [0, 1] : null;
           if (face) {
             const half = face[0] !== 0 ? lot.w / 2 : lot.d / 2;
-            const width = Math.min(12, (face[0] !== 0 ? lot.d : lot.w) - 1.5);
+            const width = Math.min(9, (face[0] !== 0 ? lot.d : lot.w) - 1.5);
             chunk.bills.push({
               x: lot.x + face[0] * (half + 0.15), y: Math.min(lot.h * 0.62, 30), z: lot.z + face[1] * (half + 0.15),
               w: width, h: width * 0.5, ry: Math.atan2(face[0], face[1]), seed: 1 + rnd() * 900,
@@ -754,7 +788,7 @@ export class City {
           }
         }
         // Giant rooftop hologram.
-        if (lot.h > 30 && rnd() < 0.12) {
+        if (lot.h > 34 && rnd() < 0.05) {
           const a = Math.floor(rnd() * 4) * (Math.PI / 2);
           chunk.bills.push({ x: lot.x, y: lot.h + 9, z: lot.z, w: 18, h: 10, ry: a, seed: 1 + rnd() * 900 });
           neon(lot.w * 0.8, 0.3, 0.3, lot.x, lot.h + 3.8, lot.z, pick(), 3, a);
