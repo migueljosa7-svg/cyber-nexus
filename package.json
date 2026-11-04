@@ -1,0 +1,21 @@
+{
+  "name": "cyber-nexus-protocol-zero",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CYBER-NEXUS: PROTOCOL ZERO - Cyberpunk 3D arena action game for the browser (Three.js + Vite + TypeScript).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  }
+}

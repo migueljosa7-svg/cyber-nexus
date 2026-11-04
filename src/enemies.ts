@@ -1,0 +1,407 @@
+import * as THREE from 'three';
+import { CFG } from './config';
+import { comboMultiplier, type GameContext } from './context';
+
+export type EnemyKind = 'agent' | 'hacker' | 'brute';
+
+interface KindSpec {
+  hp: (lvl: number) => number;
+  speed: (lvl: number) => number;
+  dmg: (lvl: number) => number;
+  radius: number;
+  height: number;
+  points: number;
+  color: number;
+}
+
+const SPECS: Record<EnemyKind, KindSpec> = {
+  agent: { hp: (l) => 40 + l * 7, speed: (l) => 5.2 + l * 0.18, dmg: (l) => 9 + l, radius: 0.6, height: 2.1, points: 100, color: 0xff3355 },
+  hacker: { hp: (l) => 26 + l * 4, speed: (l) => 4.2 + l * 0.1, dmg: (l) => 7 + l * 0.7, radius: 0.55, height: 2.3, points: 150, color: 0xff2bd6 },
+  brute: { hp: (l) => 135 + l * 20, speed: (l) => 3.4 + l * 0.08, dmg: (l) => 20 + l * 1.5, radius: 1.2, height: 3.4, points: 400, color: 0xff8a1f },
+};
+
+const barBgGeo = new THREE.PlaneGeometry(1.3, 0.14);
+const barFillGeo = new THREE.PlaneGeometry(1, 0.1).translate(0.5, 0, 0);
+const barBgMat = new THREE.MeshBasicMaterial({ color: 0x050510, transparent: true, opacity: 0.75, depthTest: false });
+
+export class Enemy {
+  readonly root = new THREE.Group();
+  readonly pos = this.root.position;
+  readonly vel = new THREE.Vector3();
+  readonly kb = new THREE.Vector3();
+  readonly radius: number;
+  readonly height: number;
+  readonly speed: number;
+  readonly dmg: number;
+  readonly maxHp: number;
+  hp: number;
+  dead = false;
+  stunT = 0;
+  atkCd = 0.6 + Math.random();
+  windup = 0;
+  private windupMax = 0;
+  private flashT = 0;
+  private facing = 0;
+  private animT = Math.random() * 10;
+  private strafe = Math.random() < 0.5 ? 1 : -1;
+  private strafeT = 1 + Math.random() * 2;
+  private stunFx = 0;
+
+  private model = new THREE.Group();
+  private bodyMats: THREE.MeshStandardMaterial[] = [];
+  private glowMat: THREE.MeshBasicMaterial;
+  private glowBase: THREE.Color;
+  private legs: THREE.Mesh[] = [];
+  private core: THREE.Mesh | null = null;
+  private bar = new THREE.Group();
+  private barFill: THREE.Mesh;
+  private barFillMat = new THREE.MeshBasicMaterial({ color: 0x33ff88, depthTest: false });
+  private disposables: Array<THREE.BufferGeometry | THREE.Material> = [];
+
+  constructor(readonly kind: EnemyKind, level: number) {
+    const s = SPECS[kind];
+    this.radius = s.radius;
+    this.height = s.height;
+    this.speed = s.speed(level);
+    this.dmg = s.dmg(level);
+    this.maxHp = this.hp = s.hp(level);
+    this.glowBase = new THREE.Color(s.color).multiplyScalar(3);
+    this.glowMat = new THREE.MeshBasicMaterial({ color: this.glowBase.clone() });
+    this.disposables.push(this.glowMat, this.barFillMat);
+    this.build();
+
+    this.bar.position.y = s.height + 0.55;
+    const bg = new THREE.Mesh(barBgGeo, barBgMat);
+    bg.renderOrder = 30;
+    this.barFill = new THREE.Mesh(barFillGeo, this.barFillMat);
+    this.barFill.position.set(-0.6, 0, 0.001);
+    this.barFill.renderOrder = 31;
+    this.bar.add(bg, this.barFill);
+    this.root.add(this.model, this.bar);
+  }
+
+  private body(color: number): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.75, emissive: 0x000000 });
+    this.bodyMats.push(m);
+    this.disposables.push(m);
+    return m;
+  }
+
+  private mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    this.disposables.push(geo);
+    this.model.add(m);
+    return m;
+  }
+
+  private build(): void {
+    const dark = this.body(0x15161f);
+    const suit = this.body(this.kind === 'brute' ? 0x261910 : 0x1b1b28);
+    if (this.kind === 'hacker') {
+      this.core = this.mesh(new THREE.OctahedronGeometry(0.55, 0), this.glowMat, 0, 1.4, 0);
+      const hood = this.mesh(new THREE.ConeGeometry(0.7, 1.1, 6), suit, 0, 1.0, 0);
+      hood.rotation.x = Math.PI;
+      const ringGeo = new THREE.TorusGeometry(0.85, 0.035, 6, 24);
+      const ring = this.mesh(ringGeo, this.glowMat, 0, 1.4, 0);
+      ring.rotation.x = Math.PI / 2;
+      this.legs.push(ring);
+      const ring2 = this.mesh(ringGeo.clone(), this.glowMat, 0, 1.4, 0);
+      this.legs.push(ring2);
+      return;
+    }
+    const k = this.kind === 'brute' ? 1.65 : 1;
+    this.mesh(new THREE.BoxGeometry(0.8 * k, 1.1 * k, 0.5 * k), suit, 0, 1.3 * k, 0);
+    this.mesh(new THREE.BoxGeometry(0.2 * k, 0.9 * k, 0.04), this.glowMat, 0, 1.3 * k, 0.27 * k);
+    this.mesh(new THREE.BoxGeometry(0.46 * k, 0.4 * k, 0.46 * k), dark, 0, 2.05 * k, 0);
+    this.mesh(new THREE.BoxGeometry(0.4 * k, 0.1 * k, 0.05), this.glowMat, 0, 2.08 * k, 0.24 * k);
+    this.mesh(new THREE.BoxGeometry(0.2 * k, 0.9 * k, 0.24 * k), dark, -0.55 * k, 1.3 * k, 0);
+    this.mesh(new THREE.BoxGeometry(0.2 * k, 0.9 * k, 0.24 * k), dark, 0.55 * k, 1.3 * k, 0);
+    if (this.kind === 'brute') {
+      this.mesh(new THREE.BoxGeometry(0.5 * k, 0.25 * k, 0.6 * k), dark, -0.62 * k, 1.85 * k, 0);
+      this.mesh(new THREE.BoxGeometry(0.5 * k, 0.25 * k, 0.6 * k), dark, 0.62 * k, 1.85 * k, 0);
+    }
+    const legGeo = new THREE.BoxGeometry(0.28 * k, 0.85 * k, 0.3 * k).translate(0, -0.42 * k, 0);
+    this.disposables.push(legGeo);
+    for (const sx of [-0.2, 0.2]) {
+      const leg = new THREE.Mesh(legGeo, dark);
+      leg.position.set(sx * k, 0.85 * k, 0);
+      leg.castShadow = true;
+      this.model.add(leg);
+      this.legs.push(leg);
+    }
+  }
+
+  hit(dmg: number, knock: THREE.Vector3): void {
+    this.hp -= dmg;
+    this.flashT = 0.12;
+    const resist = this.kind === 'brute' ? 0.35 : 1;
+    this.kb.addScaledVector(knock, resist);
+    if (this.kb.length() > 20) this.kb.setLength(20);
+    if (this.windup > 0 && this.kind !== 'brute') this.windup = 0;
+  }
+
+  stun(t: number): void {
+    this.stunT = Math.max(this.stunT, this.kind === 'brute' ? t * 0.5 : t);
+    this.windup = 0;
+  }
+
+  startWindup(t: number): void {
+    this.windup = this.windupMax = t;
+  }
+
+  /** 0..1 progress of the current wind-up telegraph (0 when idle). */
+  get windupProgress(): number {
+    return this.windup > 0 ? 1 - this.windup / this.windupMax : 0;
+  }
+
+  face(dx: number, dz: number, dt: number, rate = 10): void {
+    const target = Math.atan2(dx, dz);
+    let d = (target - this.facing) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    this.facing += d * Math.min(1, dt * rate);
+  }
+
+  nextStrafe(dt: number): number {
+    this.strafeT -= dt;
+    if (this.strafeT <= 0) {
+      this.strafeT = 1.5 + Math.random() * 2;
+      this.strafe *= -1;
+    }
+    return this.strafe;
+  }
+
+  /** Visual update: flash, telegraph glow, walk cycle, health bar billboard. */
+  animate(dt: number, moving: number, cam: THREE.Camera): void {
+    this.animT += dt;
+    this.flashT = Math.max(0, this.flashT - dt);
+    const f = this.flashT > 0 ? 1 : 0;
+    for (const m of this.bodyMats) m.emissive.setRGB(f * 0.9, f * 0.9, f * 0.9);
+
+    const wp = this.windupProgress;
+    const pulse = this.stunT > 0 ? (Math.sin(this.animT * 40) > 0 ? 0.1 : 1.5) : 1 + wp * 2.2;
+    this.glowMat.color.copy(this.glowBase).multiplyScalar(pulse);
+
+    this.model.rotation.y = this.facing;
+    if (this.kind === 'hacker') {
+      this.pos.y = 0.35 + Math.sin(this.animT * 2.2) * 0.18;
+      if (this.core) { this.core.rotation.y += dt * 2; this.core.scale.setScalar(1 + wp * 0.7); }
+      this.legs[0].rotation.z += dt * 2.4;
+      this.legs[1].rotation.x += dt * 3.1;
+    } else {
+      const sw = Math.sin(this.animT * 10) * moving * 0.8;
+      if (this.legs[0]) this.legs[0].rotation.x = sw;
+      if (this.legs[1]) this.legs[1].rotation.x = -sw;
+      this.model.position.y = Math.abs(Math.sin(this.animT * 10)) * 0.05 * moving;
+      this.model.rotation.x = this.windup > 0 ? -0.35 * Math.min(1, wp * 2) : 0;
+    }
+    if (this.stunT > 0) this.model.rotation.z = Math.sin(this.animT * 50) * 0.06;
+    else this.model.rotation.z = 0;
+
+    const frac = Math.max(0, this.hp / this.maxHp);
+    this.barFill.scale.x = Math.max(0.001, frac * 1.2);
+    this.barFillMat.color.setHSL(0.33 * frac, 1, 0.5);
+    this.bar.quaternion.copy(cam.quaternion);
+    this.stunFx = Math.max(0, this.stunFx - dt);
+  }
+
+  get needsStunSpark(): boolean {
+    if (this.stunT > 0 && this.stunFx <= 0) {
+      this.stunFx = 0.09;
+      return true;
+    }
+    return false;
+  }
+
+  dispose(): void {
+    this.disposables.forEach((d) => d.dispose());
+  }
+}
+
+/** Spawns, simulates and destroys enemies. */
+export class EnemyManager {
+  readonly list: Enemy[] = [];
+  private toSpawn = 0;
+  private spawnTimer = 1;
+  private tmp = new THREE.Vector3();
+
+  constructor(private ctx: GameContext, private scene: THREE.Scene) {}
+
+  get alive(): number {
+    return this.list.length;
+  }
+
+  get remainingToSpawn(): number {
+    return this.toSpawn;
+  }
+
+  startLevel(total: number): void {
+    this.clear();
+    this.toSpawn = total;
+    this.spawnTimer = 1.2;
+  }
+
+  stopSpawning(): void {
+    this.toSpawn = 0;
+  }
+
+  clear(): void {
+    for (const e of this.list) {
+      this.scene.remove(e.root);
+      e.dispose();
+    }
+    this.list.length = 0;
+    this.toSpawn = 0;
+  }
+
+  private pickKind(level: number): EnemyKind {
+    const r = Math.random();
+    if (level >= 3 && r < 0.13 + Math.min(0.12, level * 0.01)) return 'brute';
+    if (level >= 2 && r < 0.45) return 'hacker';
+    return 'agent';
+  }
+
+  private spawnOne(): boolean {
+    const { player, world, state } = this.ctx;
+    for (let tries = 0; tries < 10; tries++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 24 + Math.random() * 10;
+      const x = player.pos.x + Math.cos(a) * d;
+      const z = player.pos.z + Math.sin(a) * d;
+      if (world.isBlocked(x, z, 1.6)) continue;
+      const e = new Enemy(this.pickKind(state.level), state.level);
+      e.pos.set(x, 0, z);
+      e.face(player.pos.x - x, player.pos.z - z, 1, 1);
+      this.scene.add(e.root);
+      this.list.push(e);
+      this.ctx.fx.burst(this.tmp.set(x, 1, z), { color: SPECS[e.kind].color, count: 24, speed: 6, life: 0.6, size: 0.3 });
+      return true;
+    }
+    return false;
+  }
+
+  update(dt: number): void {
+    const { ctx } = this;
+    const { player, state } = ctx;
+    const maxAlive = Math.min(CFG.maxEnemiesCap, 4 + state.level * 2);
+    if (this.toSpawn > 0 && !player.dead) {
+      this.spawnTimer -= dt;
+      if (this.spawnTimer <= 0 && this.list.length < maxAlive) {
+        if (this.spawnOne()) this.toSpawn--;
+        this.spawnTimer = Math.max(0.6, 2.3 - state.level * 0.17);
+      }
+    }
+    for (const e of this.list) this.simulate(e, dt);
+  }
+
+  private simulate(e: Enemy, dt: number): void {
+    const { player, world, combat, camera, fx } = this.ctx;
+    const dx = player.pos.x - e.pos.x;
+    const dz = player.pos.z - e.pos.z;
+    const dist = Math.max(0.001, Math.hypot(dx, dz));
+    const nx = dx / dist;
+    const nz = dz / dist;
+    let mx = 0;
+    let mz = 0;
+    let moving = 0;
+
+    if (e.stunT > 0) {
+      e.stunT -= dt;
+      if (e.needsStunSpark) fx.burst(this.tmp.set(e.pos.x, e.height * 0.7, e.pos.z), { color: 0x66ccff, count: 3, speed: 4, life: 0.25, size: 0.18 });
+    } else if (!player.dead) {
+      e.atkCd -= dt;
+      if (e.kind === 'hacker') {
+        e.face(nx, nz, dt, 12);
+        const side = e.nextStrafe(dt);
+        if (e.windup <= 0) {
+          if (dist > 13) { mx = nx; mz = nz; } else if (dist < 8) { mx = -nx; mz = -nz; } else { mx = -nz * side; mz = nx * side; }
+          if (e.atkCd <= 0 && dist < 26) e.startWindup(0.55);
+        } else {
+          e.windup -= dt;
+          if (e.windup <= 0) {
+            const lead = dist / 17 * 0.5;
+            const dir = this.tmp.set(dx + player.vel.x * lead, 0, dz + player.vel.z * lead).normalize();
+            combat.fireBolt(new THREE.Vector3(e.pos.x + dir.x, 1.5, e.pos.z + dir.z), dir, { friendly: false, dmg: e.dmg, speed: 17, life: 3, variant: 'red' });
+            this.ctx.audio.enemyShot();
+            e.atkCd = Math.max(1.3, 2.4 - this.ctx.state.level * 0.06) + Math.random() * 0.5;
+          }
+        }
+        moving = Math.hypot(mx, mz);
+      } else {
+        const reach = e.kind === 'brute' ? 3.4 : 2.1;
+        if (e.windup <= 0) {
+          e.face(nx, nz, dt, 9);
+          if (dist > reach * 0.8) { mx = nx; mz = nz; moving = 1; }
+          if (dist < reach && e.atkCd <= 0) e.startWindup(e.kind === 'brute' ? 0.75 : 0.42);
+        } else {
+          e.windup -= dt;
+          if (e.windup <= 0) {
+            e.atkCd = e.kind === 'brute' ? 1.9 : 1.15;
+            if (e.kind === 'brute') {
+              combat.ringFx(this.tmp.set(e.pos.x, 0.2, e.pos.z), 0xff8a1f, 5, 0.4);
+              fx.burst(this.tmp.set(e.pos.x, 0.3, e.pos.z), { color: 0xff8a1f, count: 40, speed: 12, life: 0.5, size: 0.3, gravity: 6 });
+              this.ctx.shake(0.4);
+              this.ctx.audio.explode();
+              if (dist < 5.2) player.takeDamage(e.dmg, e.pos);
+            } else if (dist < reach + 0.8) {
+              player.takeDamage(e.dmg, e.pos);
+              fx.burst(this.tmp.set(player.pos.x, 1.2, player.pos.z), { color: 0xff3355, count: 12, speed: 6, life: 0.3, size: 0.22 });
+            }
+          }
+        }
+      }
+    }
+
+    // Separation so the horde spreads out instead of stacking.
+    for (const o of this.list) {
+      if (o === e || o.dead) continue;
+      const ox = e.pos.x - o.pos.x;
+      const oz = e.pos.z - o.pos.z;
+      const min = e.radius + o.radius + 0.3;
+      const d2 = ox * ox + oz * oz;
+      if (d2 < min * min && d2 > 1e-6) {
+        const d = Math.sqrt(d2);
+        mx += (ox / d) * 0.9 * (min - d);
+        mz += (oz / d) * 0.9 * (min - d);
+      }
+    }
+
+    const sp = e.stunT > 0 || e.windup > 0 ? 0 : e.speed;
+    e.pos.x += mx * sp * dt + e.kb.x * dt;
+    e.pos.z += mz * sp * dt + e.kb.z * dt;
+    e.kb.multiplyScalar(Math.exp(-7 * dt));
+    world.resolve(e.pos, e.radius);
+    e.animate(dt, moving, camera);
+  }
+
+  kill(e: Enemy): void {
+    if (e.dead) return;
+    e.dead = true;
+    const { ctx } = this;
+    const { state, fx, audio, combat, player } = ctx;
+    const idx = this.list.indexOf(e);
+    if (idx >= 0) this.list.splice(idx, 1);
+    const spec = SPECS[e.kind];
+    const c = new THREE.Vector3(e.pos.x, e.height * 0.55, e.pos.z);
+
+    fx.burst(c, { color: spec.color, color2: 0xffffff, count: e.kind === 'brute' ? 120 : 70, speed: 15, life: 0.9, size: 0.38, gravity: 14, drag: 1.2 });
+    fx.burst(c, { color: 0x66f6ff, count: 25, speed: 7, life: 0.5, size: 0.5, drag: 3 });
+    combat.ringFx(new THREE.Vector3(e.pos.x, 0.25, e.pos.z), spec.color, e.kind === 'brute' ? 7 : 4, 0.4);
+    audio.explode();
+    ctx.shake(e.kind === 'brute' ? 0.5 : 0.18);
+    ctx.hitStop(e.kind === 'brute' ? 0.12 : 0.05);
+
+    state.kills++;
+    state.totalKills++;
+    state.combo++;
+    state.comboTimer = 4;
+    state.score += Math.round(spec.points * comboMultiplier(state.combo));
+    player.energy = Math.min(player.maxEnergy, player.energy + 9);
+    if (Math.random() < 0.2) player.heal(4);
+
+    this.scene.remove(e.root);
+    e.dispose();
+  }
+}
