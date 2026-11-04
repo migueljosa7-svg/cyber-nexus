@@ -786,7 +786,13 @@ export class City {
     const d = 9 + rnd() * 5.5;
     const x = x0 + lot / 2 + (rnd() - 0.5) * 2 * Math.max(0, (lot - w) / 2 - 0.4);
     const z = z0 + lot / 2 + (rnd() - 0.5) * 2 * Math.max(0, (lot - d) / 2 - 0.4);
-    const h = (14 + Math.pow(rnd(), 1.4) * 52) * dh;
+    // Skyline: per-chunk height bias plus occasional spires and low blocks give an asymmetric Blade-Runner profile.
+    const chunkMod = 0.72 + 0.7 * (hash(this.seed, cx, cz, 31) / 4294967296);
+    let h = (14 + Math.pow(rnd(), 1.4) * 52) * dh * chunkMod;
+    const tier = rnd();
+    if (tier < 0.13) h *= 1.9 + rnd() * 1.3;
+    else if (tier < 0.3) h *= 0.55;
+    h = Math.min(Math.max(h, 9), 200);
     return { x, z, w, d, h, seed: 1 + rnd() * 900 };
   }
 

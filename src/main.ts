@@ -5,6 +5,7 @@ import type { GameContext, GameState } from './context';
 import { Engine } from './core/engine';
 import { GfxRenderer } from './graphics/renderer';
 import { ChaseCamera } from './graphics/camera';
+import { ContactShadows } from './graphics/contactShadows';
 import { Input } from './input';
 import { AudioFX } from './audio';
 import { ParticleSystem } from './particles';
@@ -52,6 +53,7 @@ class Game implements GameContext {
   ui!: HUD;
   tx!: Transitions;
   rig!: ChaseCamera;
+  blobs!: ContactShadows;
   state: GameState = { time: 0, kills: 0, hacks: 0, missionsDone: 0, creditsEarned: 0 };
 
   private canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -122,6 +124,7 @@ class Game implements GameContext {
       this.hacking = new HackingSystem(this, this.uiRoot);
       this.tx = new Transitions(this.ui.root, this.audio, this.gfx);
       this.rig = new ChaseCamera(this.camera, this);
+      this.blobs = new ContactShadows(this.scene);
     });
     await step(0.7, 'BUILDING METROPOLIS ...', () => {
       this.gfx.setTheme(PALETTE);
@@ -175,6 +178,18 @@ class Game implements GameContext {
     e.addSystem({ name: 'enemies', states: play, update: (dt) => this.enemies.update(dt) });
     e.addSystem({ name: 'traffic', states: [...play, ...idle], update: (dt) => this.traffic.update(dt, e.clock) });
     e.addSystem({ name: 'npcs', states: [...play, ...idle], update: (dt) => this.npcs.update(dt, e.clock) });
+    e.addSystem({
+      name: 'contact-shadows',
+      states: [...play, ...idle],
+      update: () => {
+        const b = this.blobs;
+        b.begin();
+        for (const n of this.npcs.list) b.add(n.rx, n.rz, 0.46);
+        for (const en of this.enemies.list) b.add(en.pos.x, en.pos.z, en.radius * (en.kind === 'hacker' ? 1.5 : 1.25), en.kind === 'hacker' ? 0.55 : 1);
+        if (!this.player.dead) b.add(this.player.pos.x, this.player.pos.z, 0.55 + this.player.pos.y * 0.02, this.player.grounded ? 1 : 0.6);
+        b.end();
+      },
+    });
     e.addSystem({ name: 'missions', states: play, update: (dt) => this.missions.update(dt, e.clock) });
     e.addSystem({ name: 'hacking', states: ['playing'], update: (dt) => this.hacking.update(dt) });
     e.addSystem({

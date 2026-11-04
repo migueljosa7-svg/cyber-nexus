@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { GameContext } from './context';
 import type { Enemy } from './enemies';
 
@@ -49,6 +50,27 @@ const SLASH_ARC = [2.4, 2.6, 3.6];
 const RING_POOL = 14;
 const SLASH_POOL = 6;
 
+function buildBoltGeometry(): THREE.BufferGeometry {
+  const layer = (r: number, len: number, gain: number): THREE.BufferGeometry => {
+    const g = new THREE.CylinderGeometry(r, r * 0.2, len, 8, 1, true).rotateX(Math.PI / 2).translate(0, 0, -len / 2 + 0.3);
+    const pos = g.attributes.position;
+    const col = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const t = THREE.MathUtils.clamp((pos.getZ(i) + len / 2 - 0.3) / len + 0.5, 0, 1);
+      const v = gain * Math.pow(t, 1.6);
+      col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = v;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.deleteAttribute('uv');
+    return g;
+  };
+  return mergeGeometries([layer(0.05, 2.6, 1), layer(0.15, 2.0, 0.3)])!;
+}
+
+function boltMaterial(r: number, g: number, b: number): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({ color: new THREE.Color(r, g, b), vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
+}
+
 /** Abilities (EMP / Data Shield / Quantum Burst), projectiles, deflection and shared hit effects. */
 export class Combat {
   readonly abilities: Ability[] = [
@@ -66,12 +88,13 @@ export class Combat {
   private burstLeft = 0;
   private burstTimer = 0;
   private burstDir = new THREE.Vector3();
-  private boltGeo = new THREE.BoxGeometry(0.16, 0.16, 1.1);
+  /** Laser bolt: thin bright core + soft halo, both tapering and fading to black (additive) towards the tail. */
+  private boltGeo = buildBoltGeometry();
   private boltMats: Record<NonNullable<BoltOpts['variant']>, THREE.MeshBasicMaterial> = {
-    cyan: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 2.4, 3.2) }),
-    magenta: new THREE.MeshBasicMaterial({ color: new THREE.Color(3.0, 0.3, 2.4) }),
-    red: new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 0.35, 0.5) }),
-    gold: new THREE.MeshBasicMaterial({ color: new THREE.Color(3.4, 2.6, 0.7) }),
+    cyan: boltMaterial(0.2, 2.4, 3.2),
+    magenta: boltMaterial(3.0, 0.3, 2.4),
+    red: boltMaterial(3.2, 0.35, 0.5),
+    gold: boltMaterial(3.4, 2.6, 0.7),
   };
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
