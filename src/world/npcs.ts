@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CFG, CITY } from '../config';
 import type { GameContext, HackMode, HackResult, HackTarget } from '../context';
 
@@ -59,7 +60,7 @@ export class Npc {
 /** Pedestrians: CPU state machine, rendered as 8 InstancedMeshes (one per body part) regardless of crowd size. */
 export class NpcManager {
   readonly list: Npc[] = [];
-  private parts: Record<'torso' | 'head' | 'armL' | 'armR' | 'legL' | 'legR' | 'visor' | 'stripe', THREE.InstancedMesh>;
+  private parts: Record<'torso' | 'shoulders' | 'head' | 'armL' | 'armR' | 'legL' | 'legR' | 'visor' | 'stripe', THREE.InstancedMesh>;
   private m = new THREE.Matrix4();
   private base = new THREE.Matrix4();
   private q = new THREE.Quaternion();
@@ -87,15 +88,48 @@ export class NpcManager {
       scene.add(mesh);
       return mesh;
     };
+    // Geometry is merged per body part so a whole pedestrian is 9 instanced draws for the entire crowd.
+    const ni = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
+      const out = g.index ? g.toNonIndexed() : g;
+      out.deleteAttribute('uv');
+      return out;
+    };
+    const cap = (r: number, len: number): THREE.BufferGeometry => ni(new THREE.CapsuleGeometry(r, len, 3, 6));
+    const sph = (r: number, sx = 1, sy = 1, sz = 1): THREE.BufferGeometry => ni(new THREE.SphereGeometry(r, 10, 8).scale(sx, sy, sz));
+    const bx = (w: number, h: number, d: number): THREE.BufferGeometry => ni(new THREE.BoxGeometry(w, h, d));
+    const at = (g: THREE.BufferGeometry, x: number, y: number, z: number): THREE.BufferGeometry => g.translate(x, y, z);
+
+    // Torso: tapered chest over a slim waist and hips, collar at the neck.
+    const torsoGeo = mergeGeometries([
+      at(ni(new THREE.CylinderGeometry(0.22, 0.14, 0.46, 8).scale(1, 1, 0.68)), 0, 1.3, 0),
+      at(ni(new THREE.CylinderGeometry(0.12, 0.13, 0.16, 8)), 0, 1.0, 0),
+      at(bx(0.3, 0.14, 0.2), 0, 0.93, 0),
+      at(ni(new THREE.CylinderGeometry(0.09, 0.12, 0.1, 8)), 0, 1.55, 0),
+    ])!;
+    // Pauldrons: pronounced rounded shoulder caps.
+    const shoulderGeo = mergeGeometries([at(sph(0.115, 1.25, 0.85, 1.15), -0.285, 1.48, 0), at(sph(0.115, 1.25, 0.85, 1.15), 0.285, 1.48, 0)])!;
+    // Helmet: shell, neck, jaw guard and ear pieces (the LED visor is a separate emissive part).
+    const headGeo = mergeGeometries([
+      at(sph(0.155, 1, 1.1, 1.05), 0, 1.74, 0),
+      at(ni(new THREE.CylinderGeometry(0.05, 0.06, 0.1, 8)), 0, 1.6, 0),
+      at(bx(0.13, 0.06, 0.1), 0, 1.65, 0.1),
+      at(bx(0.04, 0.09, 0.09), 0.155, 1.73, 0),
+      at(bx(0.04, 0.09, 0.09), -0.155, 1.73, 0),
+    ])!;
+    // Limbs pivot at the shoulder / hip: upper + lower segment, hand or boot included.
+    const armGeo = mergeGeometries([at(cap(0.045, 0.24), 0, -0.2, 0), at(cap(0.04, 0.22), 0, -0.5, 0.02), at(sph(0.05), 0, -0.68, 0.03)])!;
+    const legGeo = mergeGeometries([at(cap(0.065, 0.3), 0, -0.24, 0), at(cap(0.055, 0.3), 0, -0.6, 0.01), at(bx(0.12, 0.08, 0.26), 0, -0.86, 0.05)])!;
+
     this.parts = {
-      torso: mk(new THREE.CapsuleGeometry(0.19, 0.42, 4, 8).scale(1.15, 1, 0.78).translate(0, 1.22, 0), clothMat),
-      head: mk(new THREE.SphereGeometry(0.16, 12, 10).translate(0, 1.72, 0), skinMat),
-      armL: mk(new THREE.CapsuleGeometry(0.055, 0.4, 3, 6).translate(0, -0.27, 0), clothMat),
-      armR: mk(new THREE.CapsuleGeometry(0.055, 0.4, 3, 6).translate(0, -0.27, 0), clothMat),
-      legL: mk(new THREE.CapsuleGeometry(0.075, 0.5, 3, 6).translate(0, -0.34, 0), clothMat),
-      legR: mk(new THREE.CapsuleGeometry(0.075, 0.5, 3, 6).translate(0, -0.34, 0), clothMat),
-      visor: mk(new THREE.BoxGeometry(0.2, 0.045, 0.04).translate(0, 1.74, 0.15), glowMat),
-      stripe: mk(new THREE.BoxGeometry(0.4, 0.035, 0.28).translate(0, 1.28, 0), glowMat),
+      torso: mk(torsoGeo, clothMat),
+      shoulders: mk(shoulderGeo, clothMat),
+      head: mk(headGeo, skinMat),
+      armL: mk(armGeo.clone(), clothMat),
+      armR: mk(armGeo, clothMat),
+      legL: mk(legGeo.clone(), clothMat),
+      legR: mk(legGeo, clothMat),
+      visor: mk(bx(0.2, 0.05, 0.05).translate(0, 1.76, 0.14), glowMat),
+      stripe: mk(bx(0.42, 0.035, 0.28).translate(0, 1.2, 0), glowMat),
     };
     for (let i = 0; i < n; i++) {
       const npc = new Npc();
@@ -368,6 +402,7 @@ export class NpcManager {
       mesh.setMatrixAt(i, this.m);
     };
     put(this.parts.torso, 0, 0, 0, 0.06 * n.moving, 0, 0);
+    put(this.parts.shoulders, 0, 0, 0, 0.06 * n.moving, 0, 0);
     put(this.parts.head, 0, 0, 0, 0, n.headYaw, 0);
     put(this.parts.visor, 0, 0, 0, 0, n.headYaw, 0);
     put(this.parts.stripe, 0, 0, 0, 0.06 * n.moving, 0, 0);
@@ -380,6 +415,7 @@ export class NpcManager {
 
     if (n.colorDirty) {
       this.parts.torso.setColorAt(i, n.clothes);
+      this.parts.shoulders.setColorAt(i, this.tmpC.copy(n.clothes).multiplyScalar(1.6));
       this.parts.armL.setColorAt(i, n.clothes);
       this.parts.armR.setColorAt(i, n.clothes);
       this.parts.legL.setColorAt(i, this.tmpC.copy(n.clothes).multiplyScalar(0.7));

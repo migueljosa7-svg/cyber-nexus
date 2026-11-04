@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CFG } from '../config';
 import type { GameContext } from '../context';
 
@@ -235,18 +236,27 @@ export class Player {
     spine.add(mesh(new THREE.BoxGeometry(0.16, 0.16, 0.04), glow, 0, 0.42, 0.15));
     spine.add(mesh(new THREE.BoxGeometry(0.5, 0.05, 0.3), glow, 0, 0.58, 0));
     spine.add(mesh(new THREE.BoxGeometry(0.34, 0.5, 0.18), dark, 0, 0.4, -0.22));
-    spine.add(mesh(new THREE.SphereGeometry(0.1, 10, 8), dark, 0.28, 0.54, 0));
-    spine.add(mesh(new THREE.SphereGeometry(0.1, 10, 8), dark, -0.28, 0.54, 0));
+    const pauldron = new THREE.SphereGeometry(0.13, 12, 8).scale(1.3, 0.78, 1.15);
+    spine.add(mesh(pauldron, armor, 0.31, 0.56, 0));
+    spine.add(mesh(pauldron, armor, -0.31, 0.56, 0));
+    spine.add(mesh(new THREE.BoxGeometry(0.2, 0.025, 0.2), glow, 0.31, 0.62, 0));
+    spine.add(mesh(new THREE.BoxGeometry(0.2, 0.025, 0.2), glow, -0.31, 0.62, 0));
     hips.add(spine);
 
     // Head with LED visor
     const head = grp(0, 0.68, 0);
     head.add(mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.1, 8), dark, 0, -0.03, 0));
     head.add(mesh(new THREE.SphereGeometry(0.15, 16, 12).scale(1, 1.08, 1.02), dark, 0, 0.12, 0));
-    const visor = mesh(new THREE.BoxGeometry(0.22, 0.06, 0.05), this.visorMat, 0, 0.13, 0.135);
+    const visor = mesh(new THREE.BoxGeometry(0.25, 0.075, 0.05), this.visorMat, 0, 0.13, 0.138);
     visor.castShadow = false;
     head.add(visor);
     head.add(mesh(new THREE.BoxGeometry(0.02, 0.18, 0.02), glow2, 0.15, 0.2, -0.02));
+    head.add(mesh(new THREE.BoxGeometry(0.28, 0.05, 0.3), armor, 0, 0.27, -0.01));
+    head.add(mesh(new THREE.BoxGeometry(0.16, 0.07, 0.1), dark, 0, 0.0, 0.1));
+    for (const sx of [-1, 1]) {
+      head.add(mesh(new THREE.BoxGeometry(0.03, 0.1, 0.14), dark, sx * 0.155, 0.12, 0));
+      head.add(mesh(new THREE.BoxGeometry(0.02, 0.07, 0.1), glow, sx * 0.175, 0.12, 0));
+    }
     spine.add(head);
 
     // Arms
@@ -299,8 +309,43 @@ export class Player {
       hips, spine, head, shoulderL: aL.shoulder, shoulderR: aR.shoulder, elbowL: aL.elbow, elbowR: aR.elbow,
       hipL: lL.hip, hipR: lR.hip, kneeL: lL.knee, kneeR: lR.knee, footL: lL.foot, footR: lR.foot,
     };
+    this.mergeStatic(hips);
     this.model.add(hips);
     this.group.add(this.model);
+  }
+
+  /**
+   * Bakes the static sub-meshes of every bone into one mesh per (bone, material). The rig keeps every joint
+   * (groups) for animation but draws ~16 meshes instead of ~45, which also halves the shadow-pass cost.
+   */
+  private mergeStatic(root: THREE.Object3D): void {
+    for (const child of [...root.children]) {
+      if (child === this.swordPivot) continue;
+      if (child.type === 'Group') this.mergeStatic(child);
+    }
+    const byMat = new Map<THREE.Material, THREE.Mesh[]>();
+    for (const child of root.children) {
+      if (child instanceof THREE.Mesh && !(child as THREE.Mesh & { keep?: boolean }).keep) {
+        const list = byMat.get(child.material as THREE.Material) ?? [];
+        list.push(child);
+        byMat.set(child.material as THREE.Material, list);
+      }
+    }
+    for (const [mat, list] of byMat) {
+      if (list.length < 2) continue;
+      const geos = list.map((m) => {
+        m.updateMatrix();
+        const g = m.geometry.clone();
+        g.applyMatrix4(m.matrix);
+        return g.index ? g.toNonIndexed() : g;
+      });
+      const merged = mergeGeometries(geos);
+      if (!merged) continue;
+      const mesh = new THREE.Mesh(merged, mat);
+      mesh.castShadow = list[0].castShadow;
+      for (const m of list) root.remove(m);
+      root.add(mesh);
+    }
   }
 
   // ───────────────────────────── state ─────────────────────────────

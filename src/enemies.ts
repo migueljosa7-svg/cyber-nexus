@@ -26,8 +26,8 @@ const RES = (() => {
   const glowNormal = {} as Record<EnemyKind, THREE.MeshBasicMaterial>;
   const glowHot = {} as Record<EnemyKind, THREE.MeshBasicMaterial>;
   for (const k of Object.keys(SPECS) as EnemyKind[]) {
-    glowNormal[k] = glow(SPECS[k].color, 3);
-    glowHot[k] = glow(0xffffff, 5);
+    glowNormal[k] = glow(SPECS[k].color, 1.9);
+    glowHot[k] = glow(0xffd8b0, 2.2);
   }
 
   /** Bakes a part into world-of-enemy space: optional rotation, scale, offset and a flat vertex colour. */
@@ -46,40 +46,88 @@ const RES = (() => {
   };
   const box = (w: number, h: number, d: number): THREE.BoxGeometry => new THREE.BoxGeometry(w, h, d);
 
-  /** One body mesh (vertex-coloured) and one glow mesh per kind: 2 draw calls per enemy instead of ~14. */
+  /** Capsule / cylinder helpers (low segment counts: these are merged and drawn many times). */
+  const cap = (r: number, len: number): THREE.BufferGeometry => new THREE.CapsuleGeometry(r, len, 3, 6);
+  const cyl = (rt: number, rb: number, h: number): THREE.BufferGeometry => new THREE.CylinderGeometry(rt, rb, h, 8);
+  const sph = (r: number, sx = 1, sy = 1, sz = 1): THREE.BufferGeometry => new THREE.SphereGeometry(r, 10, 8).scale(sx, sy, sz);
+
+  /**
+   * One vertex-coloured body mesh and one glow mesh per kind (2 draw calls per enemy).
+   * Proportions: tapered torso, pronounced pauldrons, slim capsule limbs, boots, helmet with an LED visor.
+   */
   const build = (kind: EnemyKind): { body: THREE.BufferGeometry; glow: THREE.BufferGeometry } => {
-    const DARK = 0x15161f;
-    const SUIT = kind === 'brute' ? 0x261910 : 0x1b1b28;
+    const DARK = 0x20222e;
+    const ARMOR = kind === 'brute' ? 0x6a4428 : 0x4a5278;
+    const SUIT = kind === 'brute' ? 0x35261c : 0x2a2e48;
     if (kind === 'hacker') {
       return {
-        body: mergeGeometries([part(new THREE.ConeGeometry(0.7, 1.1, 6), 0, 1.0, 0, SUIT, 1, Math.PI)])!,
+        body: mergeGeometries([
+          part(new THREE.ConeGeometry(0.62, 1.5, 8), 0, 0.85, 0, SUIT, 1, Math.PI),
+          part(sph(0.17, 1.2, 0.8, 1.05), -0.34, 1.52, 0, ARMOR),
+          part(sph(0.17, 1.2, 0.8, 1.05), 0.34, 1.52, 0, ARMOR),
+          part(cap(0.05, 0.4), -0.42, 1.2, 0.08, DARK),
+          part(cap(0.05, 0.4), 0.42, 1.2, 0.08, DARK),
+          part(sph(0.2, 1, 1.12, 1.05), 0, 1.82, 0, ARMOR),
+          part(new THREE.ConeGeometry(0.26, 0.35, 6), 0, 1.98, -0.06, DARK),
+        ])!,
         glow: mergeGeometries([
-          part(new THREE.OctahedronGeometry(0.55, 0), 0, 1.4, 0, 0xffffff),
-          part(new THREE.TorusGeometry(0.85, 0.035, 6, 20), 0, 1.4, 0, 0xffffff, 1, Math.PI / 2),
-          part(new THREE.TorusGeometry(0.85, 0.035, 6, 20), 0, 1.4, 0, 0xffffff),
+          part(box(0.3, 0.07, 0.06), 0, 1.84, 0.19, 0xffffff),
+          part(new THREE.OctahedronGeometry(0.17, 0), 0, 1.25, 0.2, 0xffffff),
+          part(new THREE.TorusGeometry(0.66, 0.03, 6, 22), 0, 1.1, 0, 0xffffff, 1, Math.PI / 2),
+          part(new THREE.TorusGeometry(0.5, 0.025, 6, 22), 0, 1.5, 0, 0xffffff, 1, Math.PI / 2),
         ])!,
       };
     }
-    const k = kind === 'brute' ? 1.65 : 1;
-    const body = [
-      part(box(0.8, 1.1, 0.5), 0, 1.3 * k, 0, SUIT, k),
-      part(box(0.46, 0.4, 0.46), 0, 2.05 * k, 0, DARK, k),
-      part(box(0.2, 0.9, 0.24), -0.55 * k, 1.3 * k, 0, DARK, k),
-      part(box(0.2, 0.9, 0.24), 0.55 * k, 1.3 * k, 0, DARK, k),
-      part(box(0.28, 0.85, 0.3), -0.2 * k, 0.42 * k, 0, DARK, k),
-      part(box(0.28, 0.85, 0.3), 0.2 * k, 0.42 * k, 0, DARK, k),
+    const k = kind === 'brute' ? 1.55 : 1;
+    const bulk = kind === 'brute' ? 1.3 : 1;
+    const body: THREE.BufferGeometry[] = [
+      // boots + legs
+      part(box(0.2, 0.16, 0.34), -0.15 * k, 0.08 * k, 0.04 * k, DARK, k),
+      part(box(0.2, 0.16, 0.34), 0.15 * k, 0.08 * k, 0.04 * k, DARK, k),
+      part(cyl(0.085, 0.065, 0.78), -0.15 * k, 0.55 * k, 0, SUIT, k),
+      part(cyl(0.085, 0.065, 0.78), 0.15 * k, 0.55 * k, 0, SUIT, k),
+      part(box(0.14, 0.1, 0.12), -0.15 * k, 0.5 * k, 0.07 * k, ARMOR, k),
+      part(box(0.14, 0.1, 0.12), 0.15 * k, 0.5 * k, 0.07 * k, ARMOR, k),
+      // pelvis, waist, tapered chest
+      part(box(0.44 * bulk, 0.2, 0.28), 0, 1.0 * k, 0, DARK, k),
+      part(cyl(0.15 * bulk, 0.17 * bulk, 0.22), 0, 1.18 * k, 0, SUIT, k),
+      part(new THREE.CylinderGeometry(0.3 * bulk, 0.18 * bulk, 0.5, 8).scale(1, 1, 0.68), 0, 1.5 * k, 0, ARMOR, k),
+      // neck + helmet
+      part(cyl(0.07, 0.08, 0.1), 0, 1.84 * k, 0, DARK, k),
+      part(sph(0.19, 1, 1.1, 1.06), 0, 2.0 * k, 0, ARMOR, k),
+      part(box(0.1, 0.12, 0.14), 0.19 * k, 1.99 * k, 0, DARK, k),
+      part(box(0.1, 0.12, 0.14), -0.19 * k, 1.99 * k, 0, DARK, k),
+      part(box(0.16, 0.08, 0.12), 0, 1.88 * k, 0.12 * k, DARK, k),
+      // pauldrons, arms, hands
+      part(sph(0.17 * bulk, 1.25, 0.85, 1.15), -0.37 * k * bulk, 1.7 * k, 0, ARMOR, k),
+      part(sph(0.17 * bulk, 1.25, 0.85, 1.15), 0.37 * k * bulk, 1.7 * k, 0, ARMOR, k),
+      part(cap(0.055, 0.3), -0.42 * k * bulk, 1.45 * k, 0, SUIT, k),
+      part(cap(0.055, 0.3), 0.42 * k * bulk, 1.45 * k, 0, SUIT, k),
+      part(cap(0.05, 0.28), -0.43 * k * bulk, 1.12 * k, 0.04 * k, DARK, k),
+      part(cap(0.05, 0.28), 0.43 * k * bulk, 1.12 * k, 0.04 * k, DARK, k),
+      part(sph(0.06), -0.43 * k * bulk, 0.92 * k, 0.05 * k, DARK, k),
+      part(sph(0.06), 0.43 * k * bulk, 0.92 * k, 0.05 * k, DARK, k),
+      // back unit
+      part(box(0.3, 0.42, 0.16), 0, 1.5 * k, -0.2 * k, DARK, k),
     ];
     if (kind === 'brute') {
-      body.push(part(box(0.5, 0.25, 0.6), -0.62 * k, 1.85 * k, 0, DARK, k), part(box(0.5, 0.25, 0.6), 0.62 * k, 1.85 * k, 0, DARK, k));
+      body.push(part(sph(0.12, 1.4, 0.7, 1.2), -0.37 * k * bulk, 1.88 * k, 0, DARK, k), part(sph(0.12, 1.4, 0.7, 1.2), 0.37 * k * bulk, 1.88 * k, 0, DARK, k));
     }
     return {
       body: mergeGeometries(body)!,
-      glow: mergeGeometries([part(box(0.2, 0.9, 0.04), 0, 1.3 * k, 0.27 * k, 0xffffff, k), part(box(0.4, 0.1, 0.05), 0, 2.08 * k, 0.24 * k, 0xffffff, k)])!,
+      glow: mergeGeometries([
+        part(box(0.3, 0.07, 0.06), 0, 2.02 * k, 0.185 * k, 0xffffff, k),
+        part(box(0.05, 0.4, 0.03), -0.09 * k, 1.5 * k, 0.21 * k, 0xffffff, k),
+        part(box(0.05, 0.4, 0.03), 0.09 * k, 1.5 * k, 0.21 * k, 0xffffff, k),
+        part(box(0.36 * bulk, 0.04, 0.3), 0, 1.07 * k, 0, 0xffffff, k),
+        part(box(0.06, 0.06, 0.05), -0.37 * k * bulk, 1.73 * k, 0.17 * k, 0xffffff, k),
+        part(box(0.06, 0.06, 0.05), 0.37 * k * bulk, 1.73 * k, 0.17 * k, 0xffffff, k),
+      ])!,
     };
   };
 
   return {
-    bodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.35, metalness: 0.85, envMapIntensity: 1.2 }),
+    bodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.4, metalness: 0.7, envMapIntensity: 1.4, emissive: 0x0c1020, emissiveIntensity: 1 }),
     flash: new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 3, 3) }),
     stunned: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 1.2, 2.5) }),
     glowNormal,
@@ -233,7 +281,7 @@ export class Enemy {
     this.model.rotation.y = this.facing;
     if (this.kind === 'hacker') {
       this.pos.y = 0.35 + Math.sin(this.animT * 2.2) * 0.18;
-      this.glowMesh.rotation.y += dt * 2;
+      this.glowMesh.rotation.y = Math.sin(this.animT * 1.4) * 0.12;
       this.glowMesh.scale.setScalar(1 + wp * 0.35);
     } else {
       this.model.position.y = Math.abs(Math.sin(this.animT * 10)) * 0.06 * moving;

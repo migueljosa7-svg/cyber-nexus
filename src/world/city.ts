@@ -25,6 +25,7 @@ interface Chunk {
   buildings: BoxInst[];
   neon: NeonInst[];
   lamps: NeonInst[];
+  props: NeonInst[];
   bills: BillInst[];
   colliders: AABB[];
   terminals: Terminal[];
@@ -35,9 +36,10 @@ interface Lot { x: number; z: number; w: number; d: number; h: number; seed: num
 export interface District { id: number; name: string }
 
 const S = CITY.S;
-const MAX_BUILDINGS = 1500;
-const MAX_NEON = 3200;
-const MAX_LAMPS = 700;
+const MAX_BUILDINGS = 6500;
+const MAX_NEON = 6000;
+const MAX_PROPS = 3200;
+const MAX_LAMPS = 1800;
 const MAX_BILLS = 150;
 const RAIN_AREA = 70;
 const RAIN_HEIGHT = 42;
@@ -116,54 +118,79 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
   vec3 aN = abs(vNrm);
   vec3 nEmis = vec3(0.0);
   float winMask = 0.0;
-  vec3 baseCol = vec3(0.085, 0.09, 0.105);
-  float neonOn = step(0.72, hash11(vSeed * 5.3));
-  vec3 neonCol = pickColor(seedH * 0.9);
+  vec3 baseCol = vec3(0.075, 0.08, 0.095);
+  float ledOn = step(0.38, hash11(vSeed * 5.3));
+  float edgeOn = step(0.7, hash11(vSeed * 8.1));
+  vec3 ledCol = pickColor(seedH * 0.9);
   if (aN.y < 0.5) {
     float uw = aN.x > 0.5 ? vScale.z : vScale.x;
     float u = (aN.x > 0.5 ? vLocal.z : vLocal.x) + uw * 0.5;
     float v = vLocal.y + vScale.y * 0.5;
-    bool glassy = style == 1.0 || (style == 2.0 && v < vScale.y * 0.45);
-    vec2 cs = vec2(2.7, 3.6);
-    vec2 cell = floor(vec2(u, v) / cs);
-    vec2 f = fract(vec2(u, v) / cs);
-    float pn = hash21(cell + vSeed);
-    baseCol *= 0.8 + 0.4 * pn;
-    float seam = clamp(step(f.x, 0.012) + step(0.988, f.x) + step(f.y, 0.02), 0.0, 1.0);
-    baseCol *= 1.0 - 0.4 * seam;
-    float wx = glassy ? 0.94 : 0.58;
-    float wy = glassy ? 0.86 : 0.5;
-    vec2 d = abs(f - vec2(0.5, 0.52));
-    float win = (1.0 - smoothstep(wx * 0.5 - 0.04, wx * 0.5, d.x)) * (1.0 - smoothstep(wy * 0.5 - 0.04, wy * 0.5, d.y));
-    win *= step(2.2, v);
-    baseCol = mix(baseCol, vec3(0.010, 0.016, 0.026), win);
-    winMask = win;
-    float rr = hash21(cell * 1.3 + vSeed * 17.0);
-    float lit = step(glassy ? 0.9 : 0.84, rr) * step(5.0, v);
-    float ct = hash21(cell + 9.1 + vSeed);
-    vec3 lc = ct < 0.55 ? vec3(1.0, 0.72, 0.42) : (ct < 0.88 ? vec3(0.55, 0.78, 1.0) : pickColor(hash21(cell + 3.3)));
-    float flick = 1.0 - 0.85 * step(0.94, hash21(cell + 3.0)) * step(0.0, sin(uTime * (5.0 + rr * 6.0) + rr * 40.0));
-    nEmis += lc * win * lit * flick * (0.9 + rr);
-    // Street-level shopfront on part of the towers.
-    float shop = step(0.45, seedH) * step(0.6, v) * (1.0 - step(3.4, v)) * step(0.35, min(u, uw - u));
-    float mull = step(0.07, fract(u / 2.2));
-    vec3 shopCol = seedH > 0.75 ? neonCol : vec3(1.0, 0.78, 0.5);
-    baseCol = mix(baseCol, vec3(0.02), shop);
-    nEmis += shopCol * shop * mull * 0.8;
-    // Neon tube along one vertical edge, a horizontal sign tube, and a lit parapet: strategic, not everywhere.
+    float floorH = 3.6;
+    float fidx = floor(v / floorH);
+    float fy = fract(v / floorH);
     float eU = min(u, uw - u);
-    nEmis += neonCol * neonOn * (1.0 - smoothstep(0.05, 0.1, eU)) * 2.4;
-    float hb = step(0.82, hash11(vSeed * 7.7));
+    // Concrete panels with per-floor tone and slab/panel seams.
+    float pn = hash21(vec2(fidx, floor(u / 3.0)) + vSeed);
+    baseCol *= 0.78 + 0.4 * pn;
+    float seam = clamp(step(fy, 0.025) + step(fract(u / 3.0), 0.012), 0.0, 1.0);
+    baseCol *= 1.0 - 0.45 * seam;
+    float win = 0.0;
+    if (style == 0.0) {
+      // Continuous ribbon glazing, broken into runs of varying length.
+      float seg = floor(u / (5.0 + 4.0 * hash11(vSeed * 3.3)));
+      float run = step(0.14, hash21(vec2(seg, fidx) + vSeed));
+      float band = smoothstep(0.16, 0.2, fy) * (1.0 - smoothstep(0.76, 0.8, fy));
+      win = band * step(0.05, fract(u / 1.35)) * run;
+    } else if (style == 1.0) {
+      // Tall slot windows.
+      vec2 f = fract(vec2(u / 2.2, v / floorH));
+      vec2 d = abs(f - 0.5);
+      win = (1.0 - smoothstep(0.16, 0.2, d.x)) * (1.0 - smoothstep(0.37, 0.41, d.y));
+    } else {
+      // Curtain wall with a fine grid and spandrel strips.
+      vec2 g = fract(vec2(u / 1.5, v / 1.8));
+      win = step(0.05, g.x) * step(0.05, g.y) * smoothstep(0.1, 0.14, fy) * (1.0 - smoothstep(0.86, 0.9, fy));
+    }
+    win *= step(2.4, v);
+    float recess = 0.6 + 0.8 * smoothstep(0.15, 0.85, fy);
+    baseCol = mix(baseCol, vec3(0.008, 0.013, 0.022) * recess, win);
+    winMask = win;
+    // Lit rooms: contiguous runs, mostly warm with some cool, a few palette accents.
+    float room = hash21(vec2(floor(u / 2.7), fidx) * 1.7 + vSeed * 13.0);
+    float lit = step(0.91, room) * step(5.0, v);
+    float ct = hash21(vec2(floor(u / 2.7), fidx) + 9.1 + vSeed);
+    vec3 lc = ct < 0.55 ? vec3(1.0, 0.72, 0.42) : (ct < 0.88 ? vec3(0.55, 0.78, 1.0) : pickColor(hash21(vec2(fidx, 3.3) + vSeed)));
+    float flick = 1.0 - 0.85 * step(0.95, hash21(vec2(floor(u / 2.7), fidx) + 3.0)) * step(0.0, sin(uTime * (5.0 + room * 6.0) + room * 40.0));
+    nEmis += lc * win * lit * flick * 0.95;
+    // Continuous vertical LED strips, with a slow pulse travelling up the facade.
+    float spacing = 4.5 + 5.0 * hash11(vSeed * 6.1);
+    float su = abs(fract((u + seedH * 3.0) / spacing) - 0.5) * spacing;
+    float strip = (1.0 - smoothstep(0.045, 0.1, su)) * ledOn * step(2.5, v);
+    float pulse = 0.65 + 0.35 * sin(v * 0.33 - uTime * 1.8 + vSeed);
+    nEmis += ledCol * strip * pulse * 1.8;
+    baseCol = mix(baseCol, vec3(0.01), strip * 0.6);
+    // Full-height corner light on a few towers.
+    nEmis += ledCol * edgeOn * (1.0 - smoothstep(0.03, 0.07, eU)) * 2.1;
+    // Street-level shopfront: dark glazing with fine mullions and a soft warm/cool interior glow; neon only as a thin header tube.
+    float shop = step(0.45, seedH) * step(0.6, v) * (1.0 - step(3.4, v)) * step(0.35, eU);
+    float mull = step(0.12, fract(u / 1.3));
+    vec3 shopCol = seedH > 0.72 ? vec3(0.55, 0.78, 1.0) : vec3(1.0, 0.72, 0.42);
+    baseCol = mix(baseCol, vec3(0.012, 0.016, 0.024), shop);
+    nEmis += shopCol * shop * mull * (0.18 + 0.2 * hash21(vec2(floor(u / 1.3), vSeed)));
+    nEmis += ledCol * step(0.45, seedH) * (1.0 - smoothstep(0.03, 0.07, abs(v - 3.55))) * step(0.35, eU) * 1.8;
+    // Horizontal sign tube on some towers and a lit parapet.
+    float hb = step(0.84, hash11(vSeed * 7.7));
     float hv = vScale.y * (0.35 + 0.4 * hash11(vSeed * 1.9));
     nEmis += pickColor(hash11(vSeed * 4.4) * 0.9) * hb * (1.0 - smoothstep(0.05, 0.12, abs(v - hv))) * step(0.5, eU) * 2.2;
-    float rb = step(0.58, hash11(vSeed * 3.9));
-    nEmis += neonCol * rb * (1.0 - smoothstep(0.0, 0.14, vScale.y - v)) * 1.6;
+    float rb = step(0.6, hash11(vSeed * 3.9));
+    nEmis += ledCol * rb * (1.0 - smoothstep(0.0, 0.12, vScale.y - v)) * 1.5;
   } else if (vNrm.y > 0.5) {
     baseCol = vec3(0.035);
     float eX = 0.5 * vScale.x - abs(vLocal.x);
     float eZ = 0.5 * vScale.z - abs(vLocal.z);
-    float rb = step(0.58, hash11(vSeed * 3.9));
-    nEmis += neonCol * rb * (1.0 - smoothstep(0.0, 0.2, min(eX, eZ))) * 1.8;
+    float rb = step(0.6, hash11(vSeed * 3.9));
+    nEmis += ledCol * rb * (1.0 - smoothstep(0.0, 0.18, min(eX, eZ))) * 1.7;
     float rl = step(0.985, hash21(floor(vec2(vLocal.x, vLocal.z) * 0.6) + vSeed));
     nEmis += vec3(1.0, 0.15, 0.12) * rl * 1.6 * step(sin(uTime * 3.0 + vSeed), 0.0);
   }
@@ -344,6 +371,7 @@ export class City {
   private seedAttr: THREE.InstancedBufferAttribute;
   private neonMesh: THREE.InstancedMesh;
   private lampMesh: THREE.InstancedMesh;
+  private propMesh: THREE.InstancedMesh;
   private billMesh: THREE.InstancedMesh;
   private billSeed: THREE.InstancedBufferAttribute;
   private uTime = { value: 0 };
@@ -450,7 +478,11 @@ export class City {
     });
     this.billMesh = this.makeInstanced(billGeo, billMat, MAX_BILLS);
     this.billMesh.renderOrder = 4;
-    this.root.add(this.buildingMesh, this.neonMesh, this.lampMesh, this.billMesh);
+    // Street furniture (planters, benches, vending machines, bollards): lit PBR boxes tinted per instance.
+    this.propMesh = this.makeInstanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0.55, envMapIntensity: 0.8 }), MAX_PROPS);
+    this.propMesh.setColorAt(0, this.tmpC.setRGB(1, 1, 1));
+    this.propMesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
+    this.root.add(this.buildingMesh, this.neonMesh, this.lampMesh, this.propMesh, this.billMesh);
 
     // Digital rain, animated entirely on the GPU.
     const n = CFG.rainCount;
@@ -649,6 +681,9 @@ export class City {
     this.tScreenMat.color.setRGB(0.1, pulse, pulse + 0.2);
     for (const c of this.chunks.values()) {
       for (const t of c.terminals) {
+        const dd = Math.hypot(t.pos.x - p.x, t.pos.z - p.z);
+        t.ring.visible = dd < 45;
+        t.beam.visible = !t.hacked && dd < 110;
         t.ring.rotation.y += dt * (t.hacked ? 0.4 : 2.2);
         t.ring.position.y = 2.1 + Math.sin(time * 2 + c.cx) * 0.1;
       }
@@ -665,7 +700,7 @@ export class City {
     const sc = this.tmpS;
     const seeds = this.seedAttr.array as Float32Array;
     const billSeeds = this.billSeed.array as Float32Array;
-    let nb = 0, nn = 0, nl = 0, nbill = 0;
+    let nb = 0, nn = 0, nl = 0, nbill = 0, np = 0;
     for (const c of this.chunks.values()) {
       q.identity();
       for (const b of c.buildings) {
@@ -690,6 +725,13 @@ export class City {
         this.lampMesh.setColorAt(nl, this.tmpC.setRGB(l.r, l.g, l.b));
         nl++;
       }
+      for (const pr of c.props) {
+        if (np >= MAX_PROPS) break;
+        m.compose(pos.set(pr.x, pr.y, pr.z), q, sc.set(pr.sx, pr.sy, pr.sz));
+        this.propMesh.setMatrixAt(np, m);
+        this.propMesh.setColorAt(np, this.tmpC.setRGB(pr.r, pr.g, pr.b));
+        np++;
+      }
       for (const b of c.bills) {
         if (nbill >= MAX_BILLS) break;
         q.setFromAxisAngle(this.yAxis, b.ry);
@@ -701,6 +743,9 @@ export class City {
     this.buildingMesh.count = nb;
     this.neonMesh.count = nn;
     this.lampMesh.count = nl;
+    this.propMesh.count = np;
+    this.propMesh.instanceMatrix.needsUpdate = true;
+    if (this.propMesh.instanceColor) this.propMesh.instanceColor.needsUpdate = true;
     this.billMesh.count = nbill;
     this.buildingMesh.instanceMatrix.needsUpdate = true;
     this.seedAttr.needsUpdate = true;
@@ -752,7 +797,7 @@ export class City {
     const pal = this.palette;
     const cols = [new THREE.Color(pal.primary), new THREE.Color(pal.secondary), new THREE.Color(pal.accent)];
     const dark = new THREE.Color(0.03, 0.03, 0.05);
-    const chunk: Chunk = { cx, cz, key, plaza: this.isPlaza(cx, cz), buildings: [], neon: [], lamps: [], bills: [], colliders: [], terminals: [] };
+    const chunk: Chunk = { cx, cz, key, plaza: this.isPlaza(cx, cz), buildings: [], neon: [], lamps: [], props: [], bills: [], colliders: [], terminals: [] };
     const neon = (sx: number, sy: number, sz: number, x: number, y: number, z: number, c: THREE.Color, k: number, ry = 0): void => {
       chunk.neon.push({ x, y, z, sx, sy, sz, ry, r: c.r * k, g: c.g * k, b: c.b * k });
     };
@@ -767,13 +812,11 @@ export class City {
         if (!lot) continue;
         chunk.buildings.push({ x: lot.x, y: lot.h / 2, z: lot.z, sx: lot.w, sy: lot.h, sz: lot.d, seed: lot.seed });
         chunk.colliders.push({ minX: lot.x - lot.w / 2, maxX: lot.x + lot.w / 2, minZ: lot.z - lot.d / 2, maxZ: lot.z + lot.d / 2 });
+        this.addRelief(chunk, lot, rnd);
         if (rnd() < 0.7) {
           const ah = 3 + rnd() * 7;
           neon(0.22, ah, 0.22, lot.x, lot.h + ah / 2, lot.z, dark, 1);
           neon(0.6, 0.6, 0.6, lot.x, lot.h + ah, lot.z, cols[1], 4.5);
-        }
-        if (lot.h > 38 && rnd() < 0.6) {
-          chunk.buildings.push({ x: lot.x, y: lot.h + 3, z: lot.z, sx: lot.w * 0.55, sy: 6, sz: lot.d * 0.55, seed: 1 + rnd() * 900 });
         }
         // Facade billboard facing the street (outer lots only).
         if (rnd() < 0.13) {
@@ -856,7 +899,114 @@ export class City {
       chunk.colliders.push({ minX: kx - 0.6, maxX: kx + 0.6, minZ: kz - 0.5, maxZ: kz + 0.5 });
       this.root.add(chunk.terminals[0].group);
     }
+    this.addStreetProps(chunk, rnd, x0, z0, cols);
     return chunk;
+  }
+
+  /** Depth and silhouette detail for a tower: cornices, roof ledge, corner columns and a stepped crown. */
+  private addRelief(chunk: Chunk, lot: Lot, rnd: () => number): void {
+    const { x, z, w, d, h } = lot;
+    const add = (px: number, py: number, pz: number, sx: number, sy: number, sz: number): void => {
+      chunk.buildings.push({ x: px, y: py, z: pz, sx, sy, sz, seed: 1 + rnd() * 900 });
+    };
+    // Projecting cornices every few floors.
+    const floors = Math.floor(h / 14);
+    for (let k = 1; k <= Math.min(2, floors); k++) {
+      if (rnd() < 0.7) add(x, (h / (Math.min(2, floors) + 1)) * k + rnd() * 3, z, w + 0.8, 0.6, d + 0.8);
+    }
+    // Roof ledge.
+    add(x, h + 0.45, z, w + 0.55, 0.9, d + 0.55);
+    // Corner columns for depth on some towers.
+    if (rnd() < 0.4) {
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(x + sx * (w / 2 + 0.1), h / 2, z + sz * (d / 2 + 0.1), 0.7, h, 0.7);
+    }
+    // Stepped crown.
+    if (h > 26 && rnd() < 0.55) {
+      add(x, h + 4.2, z, w * 0.72, 6.6, d * 0.72);
+      add(x, h + 9.2, z, w * 0.4, 3.4, d * 0.4);
+    }
+  }
+
+  /** Small instanced furniture along the sidewalks: planters, benches, vending machines, bollards, neon signs, vents. */
+  private addStreetProps(chunk: Chunk, rnd: () => number, x0: number, z0: number, cols: THREE.Color[]): void {
+    const concrete = new THREE.Color(0.2, 0.21, 0.24);
+    const metal = new THREE.Color(0.09, 0.1, 0.13);
+    const lampTs = [8, 24, 40, 56];
+    const kioskTs = [16, 32, 48];
+    const prop = (x: number, y: number, z: number, sx: number, sy: number, sz: number, c: THREE.Color, k = 1): void => {
+      chunk.props.push({ x, y, z, sx, sy, sz, ry: 0, r: c.r * k, g: c.g * k, b: c.b * k });
+    };
+    const glow = (x: number, y: number, z: number, sx: number, sy: number, sz: number, c: THREE.Color, k: number): void => {
+      chunk.neon.push({ x, y, z, sx, sy, sz, ry: 0, r: c.r * k, g: c.g * k, b: c.b * k });
+    };
+    const hit = (x: number, z: number, hx: number, hz: number): void => {
+      chunk.colliders.push({ minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz });
+    };
+    for (const axis of [0, 1] as const) {
+      for (const side of [-1, 1] as const) {
+        let t = 10 + rnd() * 4;
+        while (t < 54) {
+          const nearLamp = lampTs.some((l) => Math.abs(l - t) < 3.2);
+          const nearKiosk = axis === 0 && side === -1 && kioskTs.some((k) => Math.abs(k - t) < 3);
+          if (!nearLamp && !nearKiosk) {
+            // Local frame: a = along the street, c = lateral distance from the centreline (outer edge ~6.5).
+            const at = (a: number, c: number): [number, number] => (axis === 0 ? [x0 + a, z0 + side * c] : [x0 + side * c, z0 + a]);
+            const box = (a: number, c: number, y: number, len: number, wid: number, hgt: number, col: THREE.Color, k = 1): void => {
+              const [px, pz] = at(a, c);
+              prop(px, y, pz, axis === 0 ? len : wid, hgt, axis === 0 ? wid : len, col, k);
+            };
+            const gl = (a: number, c: number, y: number, len: number, wid: number, hgt: number, col: THREE.Color, k: number): void => {
+              const [px, pz] = at(a, c);
+              glow(px, y, pz, axis === 0 ? len : wid, hgt, axis === 0 ? wid : len, col, k);
+            };
+            const col = cols[Math.floor(rnd() * 3)];
+            const r = rnd();
+            if (r < 0.2) {
+              // Low concrete planter wall with a neon cap.
+              box(t, 6.45, 0.28, 2.6, 0.75, 0.56, concrete);
+              gl(t, 6.45, 0.6, 2.62, 0.2, 0.05, col, 1.8);
+              const [px, pz] = at(t, 6.45);
+              hit(px, pz, axis === 0 ? 1.3 : 0.38, axis === 0 ? 0.38 : 1.3);
+            } else if (r < 0.34) {
+              // Bench.
+              box(t, 6.5, 0.26, 1.7, 0.5, 0.1, metal);
+              box(t, 6.72, 0.55, 1.7, 0.08, 0.5, metal);
+              box(t - 0.7, 6.5, 0.12, 0.1, 0.4, 0.24, metal);
+              box(t + 0.7, 6.5, 0.12, 0.1, 0.4, 0.24, metal);
+              gl(t, 6.45, 0.33, 1.6, 0.06, 0.03, col, 1.4);
+              const [px, pz] = at(t, 6.5);
+              hit(px, pz, axis === 0 ? 0.85 : 0.3, axis === 0 ? 0.3 : 0.85);
+            } else if (r < 0.52) {
+              // Vending machine with a glowing front.
+              box(t, 6.45, 0.95, 0.95, 0.8, 1.9, metal);
+              gl(t, 6.03, 1.2, 0.72, 0.05, 1.2, col, 1.6);
+              gl(t, 6.03, 0.35, 0.72, 0.05, 0.3, cols[(cols.indexOf(col) + 1) % 3], 1.2);
+              const [px, pz] = at(t, 6.45);
+              hit(px, pz, axis === 0 ? 0.48 : 0.42, axis === 0 ? 0.42 : 0.48);
+            } else if (r < 0.7) {
+              // Row of bollards with neon caps near the kerb.
+              for (let k = -1; k <= 1; k++) {
+                box(t + k * 1.3, 4.35, 0.4, 0.16, 0.16, 0.8, metal);
+                gl(t + k * 1.3, 4.35, 0.84, 0.2, 0.2, 0.06, col, 3.2);
+              }
+            } else if (r < 0.86) {
+              // Hanging bionic-clinic style neon blade sign.
+              const [px, pz] = at(t, 6.55);
+              prop(px, 3.4, pz, axis === 0 ? 0.1 : 0.6, 0.08, axis === 0 ? 0.6 : 0.1, metal);
+              const [sx2, sz2] = at(t, 6.2);
+              chunk.lamps.push({ x: sx2, y: 3.9, z: sz2, sx: axis === 0 ? 0.1 : 0.6, sy: 1.1, sz: axis === 0 ? 0.6 : 0.1, ry: 0, r: col.r * 2.2, g: col.g * 2.2, b: col.b * 2.2 });
+            } else {
+              // Utility vent / trash unit with a status LED.
+              box(t, 6.5, 0.5, 0.9, 0.7, 1.0, metal);
+              gl(t, 6.12, 0.85, 0.12, 0.04, 0.1, new THREE.Color(1, 0.3, 0.1), 3);
+              const [px, pz] = at(t, 6.5);
+              hit(px, pz, axis === 0 ? 0.45 : 0.35, axis === 0 ? 0.35 : 0.45);
+            }
+          }
+          t += 5 + rnd() * 7;
+        }
+      }
+    }
   }
 
   private addLamp(chunk: Chunk, x: number, z: number, c: THREE.Color): void {
