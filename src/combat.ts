@@ -19,7 +19,7 @@ export interface BoltOpts {
   speed: number;
   life: number;
   pierce?: boolean;
-  variant?: 'cyan' | 'magenta' | 'red';
+  variant?: 'cyan' | 'magenta' | 'red' | 'gold';
 }
 
 interface Projectile {
@@ -71,6 +71,7 @@ export class Combat {
     cyan: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 2.4, 3.2) }),
     magenta: new THREE.MeshBasicMaterial({ color: new THREE.Color(3.0, 0.3, 2.4) }),
     red: new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 0.35, 0.5) }),
+    gold: new THREE.MeshBasicMaterial({ color: new THREE.Color(3.4, 2.6, 0.7) }),
   };
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
@@ -270,7 +271,7 @@ export class Combat {
   }
 
   private updateProjectiles(dt: number): void {
-    const { enemies, player, world, fx } = this.ctx;
+    const { enemies, player, city, fx } = this.ctx;
     for (const p of this.pool) {
       if (!p.alive) continue;
       p.life -= dt;
@@ -281,7 +282,7 @@ export class Combat {
       for (let s = 0; s < steps && p.alive; s++) {
         p.mesh.position.addScaledVector(p.vel, sdt);
         const pos = p.mesh.position;
-        if (world.isBlocked(pos.x, pos.z, 0.15)) {
+        if (city.isBlocked(pos.x, pos.z, 0.15)) {
           fx.burst(pos, { color: p.friendly ? 0x66f6ff : 0xff4466, count: 10, speed: 6, life: 0.3, size: 0.2, gravity: 8 });
           this.kill(p);
           break;

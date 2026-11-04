@@ -1,5 +1,5 @@
 import type { AudioFX } from './audio';
-import type { GfxRenderer } from './engine/renderer';
+import type { GfxRenderer } from './graphics/renderer';
 
 export type LogLine = string | { text: string; cls?: 'ok' | 'warn' | 'err' | 'dim' | 'big' };
 
@@ -20,7 +20,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => window.setTimeou
 
 export function bootLines(): LogLine[] {
   return [
-    { text: '> CYBER-NEXUS // PROTOCOL ZERO', cls: 'big' },
+    { text: '> CYBER-NEXUS // OPEN WORLD PROTOCOL', cls: 'big' },
     `> SYSTEM BREACH INITIATED...`,
     `> bypassing perimeter ICE @ ${ip()}:${1024 + Math.floor(Math.random() * 60000)}`,
     `> injecting payload 0x${hex(8)} ............ [OK]`,

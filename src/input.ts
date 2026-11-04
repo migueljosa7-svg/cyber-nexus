@@ -13,6 +13,8 @@ const KEY_MAP: Record<string, Action> = {
   KeyE: 'shield',
   KeyR: 'burst',
   KeyF: 'interact',
+  Enter: 'interact',
+  Backquote: 'interact',
   KeyP: 'pause',
 };
 
@@ -44,6 +46,7 @@ export class Input {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.target instanceof HTMLInputElement) return;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
     if (e.repeat) return;
     this.keys.add(e.code);
@@ -53,6 +56,7 @@ export class Input {
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
+    if (e.target instanceof HTMLInputElement) return;
     this.keys.delete(e.code);
     const action = KEY_MAP[e.code];
     if (action) this.release(action);

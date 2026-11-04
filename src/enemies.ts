@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { CFG } from './config';
-import { comboMultiplier, type GameContext } from './context';
+import type { GameContext } from './context';
 
 export type EnemyKind = 'agent' | 'hacker' | 'brute';
 
@@ -59,6 +58,17 @@ const RES = (() => {
   };
 })();
 
+export interface EnemyOpts {
+  name?: string;
+  hpMul?: number;
+  dmgMul?: number;
+  scale?: number;
+  leader?: boolean;
+  tag?: string;
+  aggro?: boolean;
+  aggroRange?: number;
+}
+
 export class Enemy {
   readonly root = new THREE.Group();
   readonly pos = this.root.position;
@@ -70,6 +80,11 @@ export class Enemy {
   readonly dmg: number;
   readonly maxHp: number;
   hp: number;
+  name = '';
+  leader = false;
+  tag = '';
+  aggro = true;
+  aggroRange = 26;
   dead = false;
   stunT = 0;
   atkCd = 0.6 + Math.random();
@@ -93,16 +108,23 @@ export class Enemy {
   private barFill: THREE.Mesh;
   private barLevel = -1;
 
-  constructor(readonly kind: EnemyKind, level: number) {
+  constructor(readonly kind: EnemyKind, level: number, opts: EnemyOpts = {}) {
     const s = SPECS[kind];
-    this.radius = s.radius;
-    this.height = s.height;
+    const scale = opts.scale ?? 1;
+    this.radius = s.radius * scale;
+    this.height = s.height * scale;
     this.speed = s.speed(level);
-    this.dmg = s.dmg(level);
-    this.maxHp = this.hp = s.hp(level);
+    this.dmg = s.dmg(level) * (opts.dmgMul ?? 1);
+    this.maxHp = this.hp = s.hp(level) * (opts.hpMul ?? 1);
+    this.name = opts.name ?? '';
+    this.leader = !!opts.leader;
+    this.tag = opts.tag ?? '';
+    this.aggro = opts.aggro ?? true;
+    this.aggroRange = opts.aggroRange ?? 26;
     this.build();
+    if (scale !== 1) this.model.scale.setScalar(scale);
 
-    this.bar.position.y = s.height + 0.55;
+    this.bar.position.y = s.height * scale + 0.55;
     const bg = new THREE.Mesh(RES.barBgGeo, RES.barBgMat);
     bg.renderOrder = 30;
     this.barFill = new THREE.Mesh(RES.barFillGeo, RES.barFillMats[2]);
@@ -246,11 +268,9 @@ export class Enemy {
   }
 }
 
-/** Spawns, simulates and destroys enemies. */
+/** Spawns, simulates and removes hostile corporate units. Mission sites own their guards through `tag`. */
 export class EnemyManager {
   readonly list: Enemy[] = [];
-  private toSpawn = 0;
-  private spawnTimer = 1;
   private tmp = new THREE.Vector3();
   private boltO = new THREE.Vector3();
 
@@ -260,67 +280,50 @@ export class EnemyManager {
     return this.list.length;
   }
 
-  get remainingToSpawn(): number {
-    return this.toSpawn;
+  spawnAt(kind: EnemyKind, x: number, z: number, opts: EnemyOpts = {}): Enemy {
+    const level = this.ctx.player.profile.level;
+    const e = new Enemy(kind, level, opts);
+    e.pos.set(x, 0, z);
+    e.face(this.ctx.player.pos.x - x, this.ctx.player.pos.z - z, 1, 1);
+    this.scene.add(e.root);
+    this.list.push(e);
+    this.ctx.fx.burst(this.tmp.set(x, 1, z), { color: SPECS[kind].color, count: 24, speed: 6, life: 0.6, size: 0.3 });
+    return e;
   }
 
-  startLevel(total: number): void {
-    this.clear();
-    this.toSpawn = total;
-    this.spawnTimer = 1.2;
+  /** Removes a unit without rewards (despawn). */
+  remove(e: Enemy): void {
+    const i = this.list.indexOf(e);
+    if (i >= 0) this.list.splice(i, 1);
+    e.dead = true;
+    this.scene.remove(e.root);
   }
 
-  stopSpawning(): void {
-    this.toSpawn = 0;
+  removeTag(tag: string): void {
+    for (const e of [...this.list]) if (e.tag === tag) this.remove(e);
   }
 
   clear(): void {
     for (const e of this.list) this.scene.remove(e.root);
     this.list.length = 0;
-    this.toSpawn = 0;
   }
 
-  private pickKind(level: number): EnemyKind {
-    const r = Math.random();
-    if (level >= 3 && r < 0.13 + Math.min(0.12, level * 0.01)) return 'brute';
-    if (level >= 2 && r < 0.45) return 'hacker';
-    return 'agent';
+  alertTag(tag: string): void {
+    for (const e of this.list) if (e.tag === tag) e.aggro = true;
   }
 
-  private spawnOne(): boolean {
-    const { player, world, state } = this.ctx;
-    for (let tries = 0; tries < 10; tries++) {
-      const a = Math.random() * Math.PI * 2;
-      const d = 24 + Math.random() * 10;
-      const x = player.pos.x + Math.cos(a) * d;
-      const z = player.pos.z + Math.sin(a) * d;
-      if (world.isBlocked(x, z, 1.6)) continue;
-      const e = new Enemy(this.pickKind(state.level), state.level);
-      e.pos.set(x, 0, z);
-      e.face(player.pos.x - x, player.pos.z - z, 1, 1);
-      this.scene.add(e.root);
-      this.list.push(e);
-      this.ctx.fx.burst(this.tmp.set(x, 1, z), { color: SPECS[e.kind].color, count: 24, speed: 6, life: 0.6, size: 0.3 });
-      return true;
-    }
-    return false;
+  count(tag: string): number {
+    let n = 0;
+    for (const e of this.list) if (e.tag === tag) n++;
+    return n;
   }
 
   update(dt: number): void {
-    const { player, state } = this.ctx;
-    const maxAlive = Math.min(CFG.maxEnemiesCap, 4 + state.level * 2);
-    if (this.toSpawn > 0 && !player.dead) {
-      this.spawnTimer -= dt;
-      if (this.spawnTimer <= 0 && this.list.length < maxAlive) {
-        if (this.spawnOne()) this.toSpawn--;
-        this.spawnTimer = Math.max(0.6, 2.3 - state.level * 0.17);
-      }
-    }
     for (const e of this.list) this.simulate(e, dt);
   }
 
   private simulate(e: Enemy, dt: number): void {
-    const { player, world, combat, camera, fx } = this.ctx;
+    const { player, city, combat, camera, fx } = this.ctx;
     const dx = player.pos.x - e.pos.x;
     const dz = player.pos.z - e.pos.z;
     const dist = Math.max(0.001, Math.hypot(dx, dz));
@@ -330,10 +333,15 @@ export class EnemyManager {
     let mz = 0;
     let moving = 0;
 
+    if (!e.aggro && !player.dead && dist < e.aggroRange) {
+      e.aggro = true;
+      this.ctx.engine.events.emit('alert', { reason: e.tag });
+    }
+
     if (e.stunT > 0) {
       e.stunT -= dt;
       if (e.needsStunSpark) fx.burst(this.tmp.set(e.pos.x, e.height * 0.7, e.pos.z), { color: 0x66ccff, count: 3, speed: 4, life: 0.25, size: 0.18 });
-    } else if (!player.dead) {
+    } else if (!player.dead && e.aggro) {
       e.atkCd -= dt;
       if (e.kind === 'hacker') {
         e.face(nx, nz, dt, 12);
@@ -348,12 +356,12 @@ export class EnemyManager {
             const dir = this.tmp.set(dx + player.vel.x * lead, 0, dz + player.vel.z * lead).normalize();
             combat.fireBolt(this.boltO.set(e.pos.x + dir.x, 1.5, e.pos.z + dir.z), dir, { friendly: false, dmg: e.dmg, speed: 17, life: 3, variant: 'red' });
             this.ctx.audio.enemyShot();
-            e.atkCd = Math.max(1.3, 2.4 - this.ctx.state.level * 0.06) + Math.random() * 0.5;
+            e.atkCd = Math.max(1.3, 2.4 - player.profile.level * 0.05) + Math.random() * 0.5;
           }
         }
         moving = Math.hypot(mx, mz);
       } else {
-        const reach = e.kind === 'brute' ? 3.4 : 2.1;
+        const reach = e.kind === 'brute' ? 3.4 * (e.radius / 1.2 > 1 ? 1.1 : 1) : 2.1;
         if (e.windup <= 0) {
           e.face(nx, nz, dt, 9);
           if (dist > reach * 0.8) { mx = nx; mz = nz; moving = 1; }
@@ -377,7 +385,7 @@ export class EnemyManager {
       }
     }
 
-    // Separation so the horde spreads out instead of stacking.
+    // Separation so groups spread out instead of stacking.
     for (const o of this.list) {
       if (o === e || o.dead) continue;
       const ox = e.pos.x - o.pos.x;
@@ -391,11 +399,11 @@ export class EnemyManager {
       }
     }
 
-    const sp = e.stunT > 0 || e.windup > 0 ? 0 : e.speed;
+    const sp = e.stunT > 0 || e.windup > 0 || !e.aggro ? 0 : e.speed;
     e.pos.x += mx * sp * dt + e.kb.x * dt;
     e.pos.z += mz * sp * dt + e.kb.z * dt;
     e.kb.multiplyScalar(Math.exp(-7 * dt));
-    world.resolve(e.pos, e.radius);
+    city.resolve(e.pos, e.radius);
     e.animate(dt, moving, camera);
   }
 
@@ -417,13 +425,13 @@ export class EnemyManager {
     ctx.hitStop(e.kind === 'brute' ? 0.12 : 0.05);
 
     state.kills++;
-    state.totalKills++;
-    state.combo++;
-    state.comboTimer = 4;
-    state.score += Math.round(spec.points * comboMultiplier(state.combo));
+    const credits = Math.round(spec.points * (e.leader ? 3 : 0.4));
+    player.addCredits(credits);
+    player.addXp(Math.round(spec.points * 0.18 * (e.leader ? 3 : 1)));
     player.energy = Math.min(player.maxEnergy, player.energy + 9);
     if (Math.random() < 0.2) player.heal(4);
 
     this.scene.remove(e.root);
+    ctx.engine.events.emit('enemyKilled', { enemy: e });
   }
 }

@@ -1,4 +1,4 @@
-import type { AudioFX } from './audio';
+import type { AudioFX } from '../audio';
 
 type Dir = 'up' | 'down' | 'left' | 'right';
 const ARROWS: Record<Dir, string> = { up: '▲', down: '▼', left: '◀', right: '▶' };
@@ -8,7 +8,8 @@ const KEY_DIRS: Record<string, Dir> = {
 };
 
 /**
- * Terminal hacking mini-games (keyboard + touch):
+ * Terminal hacking mini-games (keyboard + touch), difficulty scales with `level`:
+ *  - SECURITY NODES: activate the scattered nodes in numeric order against the clock.
  *  - FIREWALL SEQUENCE: repeat an arrow sequence before the timer ends.
  *  - BYTE DECRYPT: pick the target bytes, in order, out of a noisy matrix.
  */
@@ -51,8 +52,10 @@ export class Minigame {
         resolve(ok);
       };
       this.finish = end;
-      if (Math.random() < 0.5) this.runSequence(level, end);
-      else this.runDecrypt(level, end);
+      const r = Math.random();
+      if (r < 0.34) this.runSequence(level, end);
+      else if (r < 0.67) this.runDecrypt(level, end);
+      else this.runNodes(level, end);
     });
   }
 
@@ -188,6 +191,39 @@ export class Minigame {
       typedEl.textContent = typed;
       this.audio.key();
       if (typed.length === 2) choose(typed);
+    };
+    window.addEventListener('keydown', onKey);
+    const prev = this.cleanup;
+    this.cleanup = () => { window.removeEventListener('keydown', onKey); prev?.(); };
+  }
+
+  // ───────────────────── SECURITY NODES ─────────────────────
+
+  private runNodes(level: number, end: (ok: boolean) => void): void {
+    const count = Math.min(9, 4 + Math.floor(level / 2));
+    const time = Math.max(5.5, 10 - level * 0.3);
+    const cells: number[] = [];
+    for (let i = 0; i < 24; i++) cells.push(i);
+    cells.sort(() => Math.random() - 0.5);
+    const picked = cells.slice(0, count);
+    let next = 1;
+
+    const { body } = this.shell('// SECURITY NODES', 'Activate the nodes in order 1 → ' + count + ' (click / tap / type the digit)', time, () => undefined, end);
+    body.innerHTML = `<div class="nodes">${picked.map((c, i) => `<button type="button" class="node" data-n="${i + 1}" style="left:${(c % 6) * 16.6 + 1}%;top:${Math.floor(c / 6) * 25 + 2}%">${i + 1}</button>`).join('')}</div>`;
+
+    const press = (n: number): void => {
+      if (n !== next) { this.penalize(body, 1.5); return; }
+      const el = body.querySelector(`.node[data-n="${n}"]`) as HTMLElement | null;
+      el?.classList.add('done');
+      this.audio.click();
+      next++;
+      if (next > count) { this.audio.success(); window.setTimeout(() => end(true), 250); }
+    };
+    body.querySelectorAll('.node').forEach((b) =>
+      b.addEventListener('pointerdown', (e) => { e.preventDefault(); press(Number((b as HTMLElement).dataset.n)); }),
+    );
+    const onKey = (e: KeyboardEvent): void => {
+      if (/^[1-9]$/.test(e.key)) press(Number(e.key));
     };
     window.addEventListener('keydown', onKey);
     const prev = this.cleanup;

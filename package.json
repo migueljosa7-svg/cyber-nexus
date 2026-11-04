@@ -1,8 +1,8 @@
 {
-  "name": "cyber-nexus-protocol-zero",
+  "name": "cyber-nexus-open-world",
   "private": true,
   "version": "1.0.0",
-  "description": "CYBER-NEXUS: PROTOCOL ZERO - Cyberpunk 3D arena action game for the browser (Three.js + Vite + TypeScript).",
+  "description": "CYBER-NEXUS: OPEN WORLD PROTOCOL - cyberpunk open-world action RPG for the browser (Three.js + Vite + TypeScript).",
   "type": "module",
   "scripts": {
     "dev": "vite --host",

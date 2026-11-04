@@ -81,6 +81,8 @@ export class AudioFX {
   click(): void { this.tone(900, 0.05, 'square', 0.07); }
   glitch(): void { this.noise(0.25, 0.4, 9000, 'highpass'); this.tone(90, 0.2, 'square', 0.12, 700); }
   portal(): void { this.tone(220, 1.2, 'sine', 0.25, 880); this.tone(330, 1.2, 'triangle', 0.15, 1320); }
+  honk(): void { this.tone(330, 0.25, 'square', 0.12); this.tone(415, 0.25, 'square', 0.1); }
+  type(): void { this.tone(1800 + Math.random() * 500, 0.02, 'square', 0.025); }
   pickup(): void { this.tone(660, 0.1, 'triangle', 0.12, 1320); }
 
   key(): void {
