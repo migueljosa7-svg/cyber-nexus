@@ -50,13 +50,13 @@ button { font-family: inherit; }
   overflow: hidden;
   pointer-events: none;
 }
-.glitch::before { color: var(--c2); transform: translate(2px, 0); clip-path: inset(0 0 55% 0); animation: gl1 2.6s infinite steps(1); mix-blend-mode: screen; }
-.glitch::after { color: var(--c1); transform: translate(-2px, 0); clip-path: inset(55% 0 0 0); animation: gl2 3.1s infinite steps(1); mix-blend-mode: screen; }
+.glitch::before { color: var(--c2); transform: translate(2px, 0); clip-path: inset(0 0 55% 0); animation: gl1 2.6s infinite steps(1); }
+.glitch::after { color: var(--c1); transform: translate(-2px, 0); clip-path: inset(55% 0 0 0); animation: gl2 3.1s infinite steps(1); }
 @keyframes gl1 { 0%, 88%, 100% { transform: translate(2px, 0); } 90% { transform: translate(-6px, 1px); } 94% { transform: translate(5px, -1px); } }
 @keyframes gl2 { 0%, 82%, 100% { transform: translate(-2px, 0); } 84% { transform: translate(7px, 0); } 92% { transform: translate(-4px, 2px); } }
 
 /* ───────────── HUD ───────────── */
-.hud { position: absolute; inset: 0; font-family: var(--font-m); }
+.hud { position: absolute; inset: 0; font-family: var(--font-m); contain: layout style; }
 .hud > * { position: absolute; }
 
 .hud-tl { left: 16px; top: 14px; width: min(320px, 42vw); transform: perspective(700px) rotateY(6deg); transform-origin: left center; display: flex; flex-direction: column; gap: 8px; }
@@ -196,7 +196,7 @@ button { font-family: inherit; }
 .tx.out { animation: txout 0.6s ease-in forwards; pointer-events: none; }
 @keyframes txout { 0% { opacity: 1; } 100% { opacity: 0; } }
 .tx.flash { animation: txflash 0.26s steps(2) infinite; }
-@keyframes txflash { 0% { filter: invert(0); transform: translateX(0); } 50% { filter: invert(1) hue-rotate(90deg); transform: translateX(8px); } }
+@keyframes txflash { 0% { background: #000; transform: translateX(0); } 50% { background: #0a3a3a; transform: translateX(8px); } }
 .tx-crt { position: absolute; inset: 0; pointer-events: none; z-index: 3; background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.32) 0 1px, transparent 1px 3px), radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.7) 100%); animation: flicker 0.15s infinite; }
 @keyframes flicker { 0% { opacity: 0.92; } 50% { opacity: 1; } 100% { opacity: 0.88; } }
 .tx-scan { position: absolute; left: 0; right: 0; height: 90px; z-index: 2; pointer-events: none; background: linear-gradient(transparent, rgba(0, 255, 200, 0.12), transparent); animation: scan 2.4s linear infinite; }

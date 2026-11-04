@@ -33,17 +33,21 @@ interface Projectile {
   hit: Set<Enemy>;
 }
 
-interface Transient {
+interface FxItem {
   obj: THREE.Object3D;
-  mat: THREE.Material;
-  geo: THREE.BufferGeometry;
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  active: boolean;
   t: number;
   dur: number;
-  step: (k: number) => void;
+  maxR: number;
+  slash: boolean;
 }
 
 const POOL = 72;
 const SLASH_ARC = [2.4, 2.6, 3.6];
+const RING_POOL = 14;
+const SLASH_POOL = 6;
 
 /** Abilities (EMP / Data Shield / Quantum Burst), projectiles, deflection and shared hit effects. */
 export class Combat {
@@ -54,7 +58,11 @@ export class Combat {
   ];
 
   private pool: Projectile[] = [];
-  private transients: Transient[] = [];
+  private fxPool: FxItem[] = [];
+  private ringGeo = new THREE.RingGeometry(0.94, 1, 48);
+  private slashGeos = SLASH_ARC.map((arc) => new THREE.RingGeometry(0.45, 1, 24, 1, -arc / 2, arc));
+  private boltTmp = new THREE.Vector3();
+  private slashDir = new THREE.Vector3();
   private burstLeft = 0;
   private burstTimer = 0;
   private burstDir = new THREE.Vector3();
@@ -67,13 +75,26 @@ export class Combat {
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
 
-  constructor(private ctx: GameContext, private scene: THREE.Scene) {
+  constructor(private ctx: GameContext, scene: THREE.Scene) {
     for (let i = 0; i < POOL; i++) {
       const mesh = new THREE.Mesh(this.boltGeo, this.boltMats.cyan);
       mesh.visible = false;
       scene.add(mesh);
       this.pool.push({ mesh, vel: new THREE.Vector3(), life: 0, dmg: 0, friendly: true, pierce: false, alive: false, hit: new Set() });
     }
+    const makeItem = (geo: THREE.BufferGeometry, slash: boolean): FxItem => {
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.frustumCulled = false;
+      const obj = new THREE.Group();
+      obj.add(mesh);
+      obj.visible = false;
+      scene.add(obj);
+      return { obj, mesh, mat, active: false, t: 0, dur: 1, maxR: 1, slash };
+    };
+    for (let i = 0; i < RING_POOL; i++) this.fxPool.push(makeItem(this.ringGeo, false));
+    for (let i = 0; i < SLASH_POOL; i++) this.fxPool.push(makeItem(this.slashGeos[i % 3], true));
   }
 
   // ───────────────────────────── abilities ─────────────────────────────
@@ -84,8 +105,7 @@ export class Combat {
 
   clear(): void {
     for (const p of this.pool) this.kill(p);
-    for (const t of this.transients) this.disposeTransient(t);
-    this.transients.length = 0;
+    for (const f of this.fxPool) { f.active = false; f.obj.visible = false; }
     this.burstLeft = 0;
   }
 
@@ -109,13 +129,13 @@ export class Combat {
         const d = this.tmp.copy(this.burstDir);
         const ca = Math.cos(a), sa = Math.sin(a);
         const dir = this.tmp2.set(d.x * ca - d.z * sa, 0, d.x * sa + d.z * ca);
-        const o = new THREE.Vector3(player.pos.x + dir.x, 1.3 + (Math.random() - 0.5) * 0.4, player.pos.z + dir.z);
+        const o = this.boltTmp.set(player.pos.x + dir.x, 1.3 + (Math.random() - 0.5) * 0.4, player.pos.z + dir.z);
         this.fireBolt(o, dir, { friendly: true, dmg: 15 * player.damageMult, speed: 58, life: 0.85, pierce: true, variant: 'magenta' });
       }
     }
 
     this.updateProjectiles(dt);
-    this.updateTransients(dt);
+    this.updateFx(dt);
   }
 
   private cast(id: AbilityId): boolean {
@@ -169,7 +189,7 @@ export class Combat {
     player.shieldHp = 70;
     player.shieldTime = 8;
     audio.shield();
-    this.ringFx(new THREE.Vector3(player.pos.x, 0.2, player.pos.z), 0x33ffcc, 4, 0.5);
+    this.ringFx(this.boltTmp.set(player.pos.x, 0.2, player.pos.z), 0x33ffcc, 4, 0.5);
     fx.burst(new THREE.Vector3(player.pos.x, 1, player.pos.z), { color: 0x33ffcc, count: 36, speed: 7, life: 0.6, size: 0.25 });
     this.ctx.ui.toast('DATA SHIELD ONLINE', 'ok');
   }
@@ -293,64 +313,63 @@ export class Combat {
     }
   }
 
-  // ───────────────────────────── transient visuals ─────────────────────────────
+  // ───────────────────────────── pooled transient visuals ─────────────────────────────
+
+  private acquire(slash: boolean): FxItem | null {
+    for (const f of this.fxPool) if (f.slash === slash && !f.active) return f;
+    return null;
+  }
 
   ringFx(at: THREE.Vector3, color: number, maxR: number, dur: number): void {
-    const geo = new THREE.RingGeometry(0.94, 1, 56);
-    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(3), transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.copy(at);
-    this.scene.add(mesh);
-    this.transients.push({
-      obj: mesh, mat, geo, t: 0, dur,
-      step: (k) => {
-        const e = 1 - Math.pow(1 - k, 3);
-        mesh.scale.setScalar(Math.max(0.01, e * maxR));
-        mat.opacity = 1 - k;
-      },
-    });
+    const f = this.acquire(false);
+    if (!f) return;
+    f.active = true;
+    f.t = 0;
+    f.dur = dur;
+    f.maxR = maxR;
+    f.mat.color.set(color).multiplyScalar(3);
+    f.mat.opacity = 1;
+    f.obj.position.copy(at);
+    f.obj.rotation.y = 0;
+    f.obj.scale.setScalar(0.01);
+    f.obj.visible = true;
   }
 
   slashFx(origin: THREE.Vector3, facing: number, range: number, idx: number): void {
-    const arc = SLASH_ARC[idx];
-    const geo = new THREE.RingGeometry(range * 0.45, range, 28, 1, -arc / 2, arc);
-    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(idx === 2 ? 3 : 0.4, idx === 2 ? 0.8 : 2.6, idx === 2 ? 2.5 : 3.2), transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = -Math.PI / 2;
-    const holder = new THREE.Group();
-    holder.position.set(origin.x, 1.0, origin.z);
-    holder.rotation.y = facing - Math.PI / 2;
-    holder.add(mesh);
-    this.scene.add(holder);
-    const dir = new THREE.Vector3(Math.sin(facing), 0, Math.cos(facing));
-    this.ctx.fx.burst(new THREE.Vector3(origin.x + dir.x * range * 0.7, 1.2, origin.z + dir.z * range * 0.7), {
-      color: 0x66f6ff, color2: 0xff2bd6, count: idx === 2 ? 30 : 12, speed: 9, life: 0.35, size: 0.22, dir, cone: 0.9,
-    });
-    this.transients.push({
-      obj: holder, mat, geo, t: 0, dur: 0.22,
-      step: (k) => {
-        mat.opacity = (1 - k) * 0.9;
-        mesh.scale.setScalar(1 + k * 0.25);
-      },
+    const f = this.acquire(true);
+    if (!f) return;
+    f.mesh.geometry = this.slashGeos[idx];
+    f.active = true;
+    f.t = 0;
+    f.dur = 0.22;
+    f.maxR = range;
+    f.mat.color.setRGB(idx === 2 ? 3 : 0.4, idx === 2 ? 0.8 : 2.6, idx === 2 ? 2.5 : 3.2);
+    f.mat.opacity = 0.9;
+    f.obj.position.set(origin.x, 1.0, origin.z);
+    f.obj.rotation.y = facing - Math.PI / 2;
+    f.obj.scale.setScalar(range);
+    f.obj.visible = true;
+    const dir = this.slashDir.set(Math.sin(facing), 0, Math.cos(facing));
+    this.ctx.fx.burst(this.boltTmp.set(origin.x + dir.x * range * 0.7, 1.2, origin.z + dir.z * range * 0.7), {
+      color: 0x66f6ff, color2: 0xff2bd6, count: idx === 2 ? 26 : 10, speed: 9, life: 0.35, size: 0.22, dir, cone: 0.9,
     });
   }
 
-  private disposeTransient(t: Transient): void {
-    this.scene.remove(t.obj);
-    t.geo.dispose();
-    t.mat.dispose();
-  }
-
-  private updateTransients(dt: number): void {
-    for (let i = this.transients.length - 1; i >= 0; i--) {
-      const t = this.transients[i];
-      t.t += dt;
-      const k = Math.min(1, t.t / t.dur);
-      t.step(k);
+  private updateFx(dt: number): void {
+    for (const f of this.fxPool) {
+      if (!f.active) continue;
+      f.t += dt;
+      const k = Math.min(1, f.t / f.dur);
+      if (f.slash) {
+        f.mat.opacity = (1 - k) * 0.9;
+        f.obj.scale.setScalar(f.maxR * (1 + k * 0.25));
+      } else {
+        f.obj.scale.setScalar(Math.max(0.01, (1 - Math.pow(1 - k, 3)) * f.maxR));
+        f.mat.opacity = 1 - k;
+      }
       if (k >= 1) {
-        this.disposeTransient(t);
-        this.transients.splice(i, 1);
+        f.active = false;
+        f.obj.visible = false;
       }
     }
   }

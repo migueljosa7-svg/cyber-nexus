@@ -1,16 +1,17 @@
+/** Touch-first devices only (a laptop with a touchscreen still has hover + fine pointer). */
 export const IS_TOUCH: boolean =
   typeof window !== 'undefined' &&
-  ('ontouchstart' in window || navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches);
+  (window.matchMedia('(pointer: coarse)').matches ||
+    ('ontouchstart' in window && !window.matchMedia('(hover: hover)').matches));
 
 export const CFG = {
   chunkSize: 56,
   viewRadius: IS_TOUCH ? 1 : 2,
   chunksPerFrame: 1,
-  maxPixelRatio: IS_TOUCH ? 1.5 : 2,
-  shadowMapSize: IS_TOUCH ? 1024 : 2048,
-  rainCount: IS_TOUCH ? 900 : 2200,
+  maxPixelRatio: IS_TOUCH ? 1.25 : 1.5,
+  rainCount: IS_TOUCH ? 700 : 1600,
   maxEnemiesCap: IS_TOUCH ? 10 : 16,
-  particleCap: IS_TOUCH ? 1400 : 3000,
+  particleCap: IS_TOUCH ? 900 : 2000,
   gravity: 34,
   playerRadius: 0.55,
 } as const;

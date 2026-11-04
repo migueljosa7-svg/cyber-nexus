@@ -95,37 +95,38 @@ export class Player {
   }
 
   private buildModel(): void {
-    const dark = new THREE.MeshStandardMaterial({ color: 0x141826, roughness: 0.35, metalness: 0.85 });
-    const armor = new THREE.MeshStandardMaterial({ color: 0x1d2440, roughness: 0.3, metalness: 0.9, emissive: 0x001a30, emissiveIntensity: 0.6 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x141826, roughness: 0.3, metalness: 0.9, envMapIntensity: 1.5 });
+    const armor = new THREE.MeshStandardMaterial({ color: 0x232c52, roughness: 0.25, metalness: 0.95, emissive: 0x002a44, emissiveIntensity: 0.8, envMapIntensity: 1.6 });
     const glow = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 1.6, 2.2) });
     const glow2 = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.2, 1.7) });
 
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.95, 0.46), armor);
-    torso.position.y = 1.35;
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.5, 4, 12), armor);
+    torso.scale.set(1.2, 1, 0.8);
+    torso.position.y = 1.4;
     const chest = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.06), glow);
     chest.position.set(0, 1.45, 0.25);
     const belt = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.12, 0.5), glow2);
     belt.position.y = 0.92;
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.42, 0.46), dark);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.27, 16, 12), dark);
     head.position.y = 2.1;
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.1, 0.06), glow);
-    visor.position.set(0, 2.12, 0.24);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.08, 0.08), glow);
+    visor.position.set(0, 2.12, 0.23);
     const pack = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.24), dark);
     pack.position.set(0, 1.4, -0.35);
 
-    this.legL = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.9, 0.3), dark);
-    this.legR = this.legL.clone();
-    this.legL.geometry.translate(0, -0.45, 0);
-    this.legR.geometry = this.legL.geometry;
+    const legGeo = new THREE.CapsuleGeometry(0.14, 0.62, 4, 8).translate(0, -0.45, 0);
+    this.legL = new THREE.Mesh(legGeo, dark);
+    this.legR = new THREE.Mesh(legGeo, dark);
     this.legL.position.set(-0.22, 0.9, 0);
     this.legR.position.set(0.22, 0.9, 0);
 
-    const armGeo = new THREE.BoxGeometry(0.22, 0.8, 0.24).translate(0, -0.35, 0);
+    const armGeo = new THREE.CapsuleGeometry(0.1, 0.55, 4, 8).translate(0, -0.38, 0);
+    const padGeo = new THREE.SphereGeometry(0.19, 10, 8);
     this.armL = new THREE.Group();
-    this.armL.add(new THREE.Mesh(armGeo, armor));
+    this.armL.add(new THREE.Mesh(armGeo, armor), new THREE.Mesh(padGeo, dark));
     this.armL.position.set(-0.55, 1.75, 0);
     this.armR = new THREE.Group();
-    this.armR.add(new THREE.Mesh(armGeo, armor));
+    this.armR.add(new THREE.Mesh(armGeo, armor), new THREE.Mesh(padGeo, dark));
     this.armR.position.set(0.55, 1.75, 0);
 
     this.swordPivot.position.set(0, -0.72, 0.05);
@@ -139,7 +140,16 @@ export class Player {
     this.swordPivot.add(hilt, this.blade, bladeGlow);
     this.armR.add(this.swordPivot);
 
-    this.model.add(torso, chest, belt, head, visor, pack, this.legL, this.legR, this.armL, this.armR);
+    const trimGeo = new THREE.BoxGeometry(0.3, 0.05, 0.3);
+    const kneeL = new THREE.Mesh(trimGeo, glow);
+    kneeL.position.y = -0.5;
+    const kneeR = kneeL.clone();
+    this.legL.add(kneeL);
+    this.legR.add(kneeR);
+    const neck = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.025, 6, 16), glow2);
+    neck.rotation.x = Math.PI / 2;
+    neck.position.y = 1.9;
+    this.model.add(torso, chest, belt, head, visor, pack, neck, this.legL, this.legR, this.armL, this.armR);
     this.model.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = true; });
     this.group.add(this.model);
   }

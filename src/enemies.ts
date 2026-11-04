@@ -20,9 +20,44 @@ const SPECS: Record<EnemyKind, KindSpec> = {
   brute: { hp: (l) => 135 + l * 20, speed: (l) => 3.4 + l * 0.08, dmg: (l) => 20 + l * 1.5, radius: 1.2, height: 3.4, points: 400, color: 0xff8a1f },
 };
 
-const barBgGeo = new THREE.PlaneGeometry(1.3, 0.14);
-const barFillGeo = new THREE.PlaneGeometry(1, 0.1).translate(0.5, 0, 0);
-const barBgMat = new THREE.MeshBasicMaterial({ color: 0x050510, transparent: true, opacity: 0.75, depthTest: false });
+/** Geometries and materials are created once and shared by every enemy (no per-spawn allocations). */
+const RES = (() => {
+  const box = (w: number, h: number, d: number): THREE.BoxGeometry => new THREE.BoxGeometry(w, h, d);
+  const std = (color: number): THREE.MeshStandardMaterial =>
+    new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.85, envMapIntensity: 1.2 });
+  const glow = (c: number, k: number): THREE.MeshBasicMaterial => new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k) });
+  const glowNormal = {} as Record<EnemyKind, THREE.MeshBasicMaterial>;
+  const glowHot = {} as Record<EnemyKind, THREE.MeshBasicMaterial>;
+  for (const k of Object.keys(SPECS) as EnemyKind[]) {
+    glowNormal[k] = glow(SPECS[k].color, 3);
+    glowHot[k] = glow(0xffffff, 5);
+  }
+  return {
+    dark: std(0x15161f),
+    suit: std(0x1b1b28),
+    bruteSuit: std(0x261910),
+    flash: new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 3, 3) }),
+    stunned: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 1.2, 2.5) }),
+    glowNormal,
+    glowHot,
+    barBgGeo: new THREE.PlaneGeometry(1.3, 0.14),
+    barFillGeo: new THREE.PlaneGeometry(1, 0.1).translate(0.5, 0, 0),
+    barBgMat: new THREE.MeshBasicMaterial({ color: 0x050510, transparent: true, opacity: 0.75, depthTest: false }),
+    barFillMats: [0xff3355, 0xffc400, 0x33ff88].map((c) => new THREE.MeshBasicMaterial({ color: c, depthTest: false })),
+    g: {
+      torso: box(0.8, 1.1, 0.5),
+      strip: box(0.2, 0.9, 0.04),
+      head: box(0.46, 0.4, 0.46),
+      visor: box(0.4, 0.1, 0.05),
+      arm: box(0.2, 0.9, 0.24),
+      pad: box(0.5, 0.25, 0.6),
+      leg: box(0.28, 0.85, 0.3).translate(0, -0.42, 0),
+      core: new THREE.OctahedronGeometry(0.55, 0),
+      hood: new THREE.ConeGeometry(0.7, 1.1, 6),
+      ring: new THREE.TorusGeometry(0.85, 0.035, 6, 20),
+    },
+  };
+})();
 
 export class Enemy {
   readonly root = new THREE.Group();
@@ -46,17 +81,17 @@ export class Enemy {
   private strafe = Math.random() < 0.5 ? 1 : -1;
   private strafeT = 1 + Math.random() * 2;
   private stunFx = 0;
+  /** 0 normal, 1 hit flash, 2 telegraph, 3 stunned — avoids redundant material swaps. */
+  private matState = 0;
 
   private model = new THREE.Group();
-  private bodyMats: THREE.MeshStandardMaterial[] = [];
-  private glowMat: THREE.MeshBasicMaterial;
-  private glowBase: THREE.Color;
+  private bodyMeshes: Array<{ m: THREE.Mesh; mat: THREE.Material }> = [];
+  private glowMeshes: THREE.Mesh[] = [];
   private legs: THREE.Mesh[] = [];
   private core: THREE.Mesh | null = null;
   private bar = new THREE.Group();
   private barFill: THREE.Mesh;
-  private barFillMat = new THREE.MeshBasicMaterial({ color: 0x33ff88, depthTest: false });
-  private disposables: Array<THREE.BufferGeometry | THREE.Material> = [];
+  private barLevel = -1;
 
   constructor(readonly kind: EnemyKind, level: number) {
     const s = SPECS[kind];
@@ -65,77 +100,60 @@ export class Enemy {
     this.speed = s.speed(level);
     this.dmg = s.dmg(level);
     this.maxHp = this.hp = s.hp(level);
-    this.glowBase = new THREE.Color(s.color).multiplyScalar(3);
-    this.glowMat = new THREE.MeshBasicMaterial({ color: this.glowBase.clone() });
-    this.disposables.push(this.glowMat, this.barFillMat);
     this.build();
 
     this.bar.position.y = s.height + 0.55;
-    const bg = new THREE.Mesh(barBgGeo, barBgMat);
+    const bg = new THREE.Mesh(RES.barBgGeo, RES.barBgMat);
     bg.renderOrder = 30;
-    this.barFill = new THREE.Mesh(barFillGeo, this.barFillMat);
+    this.barFill = new THREE.Mesh(RES.barFillGeo, RES.barFillMats[2]);
     this.barFill.position.set(-0.6, 0, 0.001);
     this.barFill.renderOrder = 31;
     this.bar.add(bg, this.barFill);
     this.root.add(this.model, this.bar);
   }
 
-  private body(color: number): THREE.MeshStandardMaterial {
-    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.75, emissive: 0x000000 });
-    this.bodyMats.push(m);
-    this.disposables.push(m);
-    return m;
-  }
-
-  private mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
+  private part(geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, scale = 1, glow = false): THREE.Mesh {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
-    m.castShadow = true;
-    this.disposables.push(geo);
+    if (scale !== 1) m.scale.setScalar(scale);
+    m.castShadow = !glow;
     this.model.add(m);
+    if (glow) this.glowMeshes.push(m);
+    else this.bodyMeshes.push({ m, mat });
     return m;
   }
 
   private build(): void {
-    const dark = this.body(0x15161f);
-    const suit = this.body(this.kind === 'brute' ? 0x261910 : 0x1b1b28);
+    const G = RES.g;
+    const gl = RES.glowNormal[this.kind];
     if (this.kind === 'hacker') {
-      this.core = this.mesh(new THREE.OctahedronGeometry(0.55, 0), this.glowMat, 0, 1.4, 0);
-      const hood = this.mesh(new THREE.ConeGeometry(0.7, 1.1, 6), suit, 0, 1.0, 0);
+      this.core = this.part(G.core, gl, 0, 1.4, 0, 1, true);
+      const hood = this.part(G.hood, RES.suit, 0, 1.0, 0);
       hood.rotation.x = Math.PI;
-      const ringGeo = new THREE.TorusGeometry(0.85, 0.035, 6, 24);
-      const ring = this.mesh(ringGeo, this.glowMat, 0, 1.4, 0);
-      ring.rotation.x = Math.PI / 2;
-      this.legs.push(ring);
-      const ring2 = this.mesh(ringGeo.clone(), this.glowMat, 0, 1.4, 0);
-      this.legs.push(ring2);
+      const r1 = this.part(G.ring, gl, 0, 1.4, 0, 1, true);
+      r1.rotation.x = Math.PI / 2;
+      const r2 = this.part(G.ring, gl, 0, 1.4, 0, 1, true);
+      this.legs.push(r1, r2);
       return;
     }
     const k = this.kind === 'brute' ? 1.65 : 1;
-    this.mesh(new THREE.BoxGeometry(0.8 * k, 1.1 * k, 0.5 * k), suit, 0, 1.3 * k, 0);
-    this.mesh(new THREE.BoxGeometry(0.2 * k, 0.9 * k, 0.04), this.glowMat, 0, 1.3 * k, 0.27 * k);
-    this.mesh(new THREE.BoxGeometry(0.46 * k, 0.4 * k, 0.46 * k), dark, 0, 2.05 * k, 0);
-    this.mesh(new THREE.BoxGeometry(0.4 * k, 0.1 * k, 0.05), this.glowMat, 0, 2.08 * k, 0.24 * k);
-    this.mesh(new THREE.BoxGeometry(0.2 * k, 0.9 * k, 0.24 * k), dark, -0.55 * k, 1.3 * k, 0);
-    this.mesh(new THREE.BoxGeometry(0.2 * k, 0.9 * k, 0.24 * k), dark, 0.55 * k, 1.3 * k, 0);
+    const suit = this.kind === 'brute' ? RES.bruteSuit : RES.suit;
+    this.part(G.torso, suit, 0, 1.3 * k, 0, k);
+    this.part(G.strip, gl, 0, 1.3 * k, 0.27 * k, k, true);
+    this.part(G.head, RES.dark, 0, 2.05 * k, 0, k);
+    this.part(G.visor, gl, 0, 2.08 * k, 0.24 * k, k, true);
+    this.part(G.arm, RES.dark, -0.55 * k, 1.3 * k, 0, k);
+    this.part(G.arm, RES.dark, 0.55 * k, 1.3 * k, 0, k);
     if (this.kind === 'brute') {
-      this.mesh(new THREE.BoxGeometry(0.5 * k, 0.25 * k, 0.6 * k), dark, -0.62 * k, 1.85 * k, 0);
-      this.mesh(new THREE.BoxGeometry(0.5 * k, 0.25 * k, 0.6 * k), dark, 0.62 * k, 1.85 * k, 0);
+      this.part(G.pad, RES.dark, -0.62 * k, 1.85 * k, 0, k);
+      this.part(G.pad, RES.dark, 0.62 * k, 1.85 * k, 0, k);
     }
-    const legGeo = new THREE.BoxGeometry(0.28 * k, 0.85 * k, 0.3 * k).translate(0, -0.42 * k, 0);
-    this.disposables.push(legGeo);
-    for (const sx of [-0.2, 0.2]) {
-      const leg = new THREE.Mesh(legGeo, dark);
-      leg.position.set(sx * k, 0.85 * k, 0);
-      leg.castShadow = true;
-      this.model.add(leg);
-      this.legs.push(leg);
-    }
+    for (const sx of [-0.2, 0.2]) this.legs.push(this.part(G.leg, RES.dark, sx * k, 0.85 * k, 0, k));
   }
 
   hit(dmg: number, knock: THREE.Vector3): void {
     this.hp -= dmg;
-    this.flashT = 0.12;
+    this.flashT = 0.1;
     const resist = this.kind === 'brute' ? 0.35 : 1;
     this.kb.addScaledVector(knock, resist);
     if (this.kb.length() > 20) this.kb.setLength(20);
@@ -173,21 +191,30 @@ export class Enemy {
     return this.strafe;
   }
 
-  /** Visual update: flash, telegraph glow, walk cycle, health bar billboard. */
+  private setMaterialState(state: number): void {
+    if (state === this.matState) return;
+    this.matState = state;
+    for (const b of this.bodyMeshes) b.m.material = state === 1 ? RES.flash : b.mat;
+    const gm = state === 0 ? RES.glowNormal[this.kind] : state === 3 ? RES.stunned : RES.glowHot[this.kind];
+    for (const g of this.glowMeshes) g.material = gm;
+  }
+
+  /** Visual update: hit flash, telegraph glow (shared material swaps), walk cycle, health bar billboard. */
   animate(dt: number, moving: number, cam: THREE.Camera): void {
     this.animT += dt;
     this.flashT = Math.max(0, this.flashT - dt);
-    const f = this.flashT > 0 ? 1 : 0;
-    for (const m of this.bodyMats) m.emissive.setRGB(f * 0.9, f * 0.9, f * 0.9);
-
     const wp = this.windupProgress;
-    const pulse = this.stunT > 0 ? (Math.sin(this.animT * 40) > 0 ? 0.1 : 1.5) : 1 + wp * 2.2;
-    this.glowMat.color.copy(this.glowBase).multiplyScalar(pulse);
+    if (this.flashT > 0) this.setMaterialState(1);
+    else if (this.stunT > 0) this.setMaterialState(Math.sin(this.animT * 40) > 0 ? 3 : 0);
+    else this.setMaterialState(wp > 0.5 ? 2 : 0);
 
     this.model.rotation.y = this.facing;
     if (this.kind === 'hacker') {
       this.pos.y = 0.35 + Math.sin(this.animT * 2.2) * 0.18;
-      if (this.core) { this.core.rotation.y += dt * 2; this.core.scale.setScalar(1 + wp * 0.7); }
+      if (this.core) {
+        this.core.rotation.y += dt * 2;
+        this.core.scale.setScalar(1 + wp * 0.7);
+      }
       this.legs[0].rotation.z += dt * 2.4;
       this.legs[1].rotation.x += dt * 3.1;
     } else {
@@ -197,12 +224,15 @@ export class Enemy {
       this.model.position.y = Math.abs(Math.sin(this.animT * 10)) * 0.05 * moving;
       this.model.rotation.x = this.windup > 0 ? -0.35 * Math.min(1, wp * 2) : 0;
     }
-    if (this.stunT > 0) this.model.rotation.z = Math.sin(this.animT * 50) * 0.06;
-    else this.model.rotation.z = 0;
+    this.model.rotation.z = this.stunT > 0 ? Math.sin(this.animT * 50) * 0.06 : 0;
 
     const frac = Math.max(0, this.hp / this.maxHp);
     this.barFill.scale.x = Math.max(0.001, frac * 1.2);
-    this.barFillMat.color.setHSL(0.33 * frac, 1, 0.5);
+    const level = frac > 0.6 ? 2 : frac > 0.3 ? 1 : 0;
+    if (level !== this.barLevel) {
+      this.barLevel = level;
+      this.barFill.material = RES.barFillMats[level];
+    }
     this.bar.quaternion.copy(cam.quaternion);
     this.stunFx = Math.max(0, this.stunFx - dt);
   }
@@ -214,10 +244,6 @@ export class Enemy {
     }
     return false;
   }
-
-  dispose(): void {
-    this.disposables.forEach((d) => d.dispose());
-  }
 }
 
 /** Spawns, simulates and destroys enemies. */
@@ -226,6 +252,7 @@ export class EnemyManager {
   private toSpawn = 0;
   private spawnTimer = 1;
   private tmp = new THREE.Vector3();
+  private boltO = new THREE.Vector3();
 
   constructor(private ctx: GameContext, private scene: THREE.Scene) {}
 
@@ -248,10 +275,7 @@ export class EnemyManager {
   }
 
   clear(): void {
-    for (const e of this.list) {
-      this.scene.remove(e.root);
-      e.dispose();
-    }
+    for (const e of this.list) this.scene.remove(e.root);
     this.list.length = 0;
     this.toSpawn = 0;
   }
@@ -283,8 +307,7 @@ export class EnemyManager {
   }
 
   update(dt: number): void {
-    const { ctx } = this;
-    const { player, state } = ctx;
+    const { player, state } = this.ctx;
     const maxAlive = Math.min(CFG.maxEnemiesCap, 4 + state.level * 2);
     if (this.toSpawn > 0 && !player.dead) {
       this.spawnTimer -= dt;
@@ -321,9 +344,9 @@ export class EnemyManager {
         } else {
           e.windup -= dt;
           if (e.windup <= 0) {
-            const lead = dist / 17 * 0.5;
+            const lead = (dist / 17) * 0.5;
             const dir = this.tmp.set(dx + player.vel.x * lead, 0, dz + player.vel.z * lead).normalize();
-            combat.fireBolt(new THREE.Vector3(e.pos.x + dir.x, 1.5, e.pos.z + dir.z), dir, { friendly: false, dmg: e.dmg, speed: 17, life: 3, variant: 'red' });
+            combat.fireBolt(this.boltO.set(e.pos.x + dir.x, 1.5, e.pos.z + dir.z), dir, { friendly: false, dmg: e.dmg, speed: 17, life: 3, variant: 'red' });
             this.ctx.audio.enemyShot();
             e.atkCd = Math.max(1.3, 2.4 - this.ctx.state.level * 0.06) + Math.random() * 0.5;
           }
@@ -384,11 +407,11 @@ export class EnemyManager {
     const idx = this.list.indexOf(e);
     if (idx >= 0) this.list.splice(idx, 1);
     const spec = SPECS[e.kind];
-    const c = new THREE.Vector3(e.pos.x, e.height * 0.55, e.pos.z);
+    const c = this.tmp.set(e.pos.x, e.height * 0.55, e.pos.z);
 
-    fx.burst(c, { color: spec.color, color2: 0xffffff, count: e.kind === 'brute' ? 120 : 70, speed: 15, life: 0.9, size: 0.38, gravity: 14, drag: 1.2 });
-    fx.burst(c, { color: 0x66f6ff, count: 25, speed: 7, life: 0.5, size: 0.5, drag: 3 });
-    combat.ringFx(new THREE.Vector3(e.pos.x, 0.25, e.pos.z), spec.color, e.kind === 'brute' ? 7 : 4, 0.4);
+    fx.burst(c, { color: spec.color, color2: 0xffffff, count: e.kind === 'brute' ? 100 : 56, speed: 15, life: 0.9, size: 0.38, gravity: 14, drag: 1.2 });
+    fx.burst(c, { color: 0x66f6ff, count: 18, speed: 7, life: 0.5, size: 0.5, drag: 3 });
+    combat.ringFx(c.set(e.pos.x, 0.25, e.pos.z), spec.color, e.kind === 'brute' ? 7 : 4, 0.4);
     audio.explode();
     ctx.shake(e.kind === 'brute' ? 0.5 : 0.18);
     ctx.hitStop(e.kind === 'brute' ? 0.12 : 0.05);
@@ -402,6 +425,5 @@ export class EnemyManager {
     if (Math.random() < 0.2) player.heal(4);
 
     this.scene.remove(e.root);
-    e.dispose();
   }
 }

@@ -12,7 +12,7 @@ const POST_SHADER = {
     uTime: { value: 0 },
     uGlitch: { value: 0 },
     uHurt: { value: 0 },
-    uAberration: { value: 0.0014 },
+    uAberration: { value: 0.0012 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -31,28 +31,28 @@ const POST_SHADER = {
       float g = uGlitch;
       if (g > 0.001) {
         float band = floor(uv.y * 24.0 + floor(uTime * 18.0));
-        float h = hash(band);
-        if (h > 1.0 - g * 0.55) uv.x += (hash(band + 7.0) - 0.5) * 0.18 * g;
+        if (hash(band) > 1.0 - g * 0.55) uv.x += (hash(band + 7.0) - 0.5) * 0.18 * g;
       }
-      vec2 dir = (uv - 0.5);
+      vec2 dir = uv - 0.5;
       float dist = dot(dir, dir);
-      float ab = uAberration + g * 0.012 + uHurt * 0.006;
+      float ab = (uAberration + g * 0.012 + uHurt * 0.006) * (1.0 + dist * 4.0);
       vec3 col;
-      col.r = texture2D(tDiffuse, uv + dir * ab * (1.0 + dist * 4.0)).r;
+      col.r = texture2D(tDiffuse, uv + dir * ab).r;
       col.g = texture2D(tDiffuse, uv).g;
-      col.b = texture2D(tDiffuse, uv - dir * ab * (1.0 + dist * 4.0)).b;
-      float scan = 0.96 + 0.04 * sin(uv.y * 900.0 + uTime * 6.0);
-      col *= scan;
+      col.b = texture2D(tDiffuse, uv - dir * ab).b;
+      col *= 0.97 + 0.03 * sin(uv.y * 900.0 + uTime * 6.0);
       float vig = smoothstep(0.95, 0.25, length(dir) * 1.25);
-      col *= mix(0.55, 1.0, vig);
+      col *= mix(0.5, 1.0, vig);
       col += vec3(1.0, 0.05, 0.1) * uHurt * (1.0 - vig) * 1.4;
-      col = mix(col, col.gbr * 1.2, step(1.0 - g * 0.08, hash(floor(uv.y * 60.0) + floor(uTime * 30.0))) * g);
       gl_FragColor = vec4(col, 1.0);
     }
   `,
 };
 
-/** Owns the WebGL renderer, scene, camera, lights, sky and the post-processing chain. */
+/** Quality tiers, lowered automatically when the frame rate sags. */
+enum Tier { Low = 0, Medium = 1, High = 2 }
+
+/** Owns the WebGL renderer, scene, camera, lights, sky, environment reflections and post-processing. */
 export class GfxRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -65,49 +65,66 @@ export class GfxRenderer {
   private sky: THREE.Mesh;
   private skyMat: THREE.ShaderMaterial;
   private stars: THREE.Points;
+  private pmrem: THREE.PMREMGenerator;
+  private envRT: THREE.WebGLRenderTarget | null = null;
   private resizeCbs: Array<() => void> = [];
   private pixelRatio: number;
   private maxPixelRatio: number;
+  private tier: Tier;
   private fpsAvg = 60;
   private lowTimer = 0;
   private highTimer = 0;
+  private bloomStrength: number;
 
   glitch = 0;
   hurt = 0;
+  readonly gpuName: string;
 
   constructor(readonly canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
-    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, CFG.maxPixelRatio);
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false, alpha: false });
+    const gl = this.renderer.getContext();
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    this.gpuName = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+    const weak = IS_TOUCH || /intel|swiftshader|llvmpipe|mali-4|adreno \(tm\) [2-4]\d\d/i.test(this.gpuName);
+
+    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, weak ? 1.25 : CFG.maxPixelRatio);
     this.pixelRatio = this.maxPixelRatio;
+    this.tier = IS_TOUCH ? Tier.Low : weak ? Tier.Medium : Tier.High;
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = this.tier !== Tier.Low;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.autoUpdate = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 0.95;
+    this.renderer.info.autoReset = false;
 
     this.scene.background = new THREE.Color(0x05061a);
-    this.scene.fog = new THREE.FogExp2(0x05061a, 0.011);
+    this.scene.fog = new THREE.FogExp2(0x05061a, 0.012);
+    this.scene.environmentIntensity = 0.45;
 
-    this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 600);
+    this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.15, 500);
     this.camera.position.set(0, 6, 12);
 
-    this.hemi = new THREE.HemisphereLight(0x5a6bff, 0x120620, 0.9);
+    this.hemi = new THREE.HemisphereLight(0x5a6bff, 0x120620, 0.55);
     this.scene.add(this.hemi);
 
-    this.sun = new THREE.DirectionalLight(0x9db4ff, 1.5);
-    this.sun.position.set(30, 60, 20);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(CFG.shadowMapSize, CFG.shadowMapSize);
+    // Shadows only for characters (buildings never cast): one cheap small shadow map.
+    this.sun = new THREE.DirectionalLight(0x9db4ff, 1.6);
+    this.sun.castShadow = this.tier !== Tier.Low;
+    const sm = this.tier === Tier.High ? 1536 : 1024;
+    this.sun.shadow.mapSize.set(sm, sm);
     const sc = this.sun.shadow.camera;
-    sc.left = -48; sc.right = 48; sc.top = 48; sc.bottom = -48; sc.near = 1; sc.far = 160;
-    this.sun.shadow.bias = -0.0006;
-    this.sun.shadow.normalBias = 0.04;
+    sc.left = -22; sc.right = 22; sc.top = 22; sc.bottom = -22; sc.near = 1; sc.far = 120;
+    this.sun.shadow.bias = -0.0008;
+    this.sun.shadow.normalBias = 0.05;
     this.scene.add(this.sun, this.sun.target);
 
-    const rim = new THREE.DirectionalLight(0xff2bd6, 0.5);
-    rim.position.set(-40, 20, -30);
-    this.scene.add(rim);
+    if (this.tier !== Tier.Low) {
+      const rim = new THREE.DirectionalLight(0xff2bd6, 0.55);
+      rim.position.set(-40, 20, -30);
+      this.scene.add(rim);
+    }
 
     this.skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
@@ -128,11 +145,12 @@ export class GfxRenderer {
           gl_FragColor = vec4(c, 1.0);
         }`,
     });
-    this.sky = new THREE.Mesh(new THREE.SphereGeometry(400, 24, 16), this.skyMat);
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(400, 20, 12), this.skyMat);
     this.sky.renderOrder = -10;
+    this.sky.frustumCulled = false;
     this.scene.add(this.sky);
 
-    const starCount = IS_TOUCH ? 300 : 700;
+    const starCount = IS_TOUCH ? 250 : 600;
     const sp = new Float32Array(starCount * 3);
     for (let i = 0; i < starCount; i++) {
       const u = Math.random() * 0.95 + 0.05;
@@ -143,26 +161,45 @@ export class GfxRenderer {
     const sg = new THREE.BufferGeometry();
     sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
     this.stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xbfd0ff, size: 1.4, sizeAttenuation: false, fog: false, transparent: true, opacity: 0.8, depthWrite: false }));
+    this.stars.frustumCulled = false;
     this.scene.add(this.stars);
 
-    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: IS_TOUCH ? 0 : 4 });
+    this.pmrem = new THREE.PMREMGenerator(this.renderer);
+
+    // MSAA only where the GPU can afford it; resolution scaling + bloom at half res do the rest.
+    const samples = this.tier === Tier.High ? 4 : this.tier === Tier.Medium ? 2 : 0;
+    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.setPixelRatio(this.pixelRatio);
     this.composer.setSize(window.innerWidth, window.innerHeight);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), IS_TOUCH ? 0.7 : 0.95, 0.7, 0.82);
+    this.bloomStrength = this.tier === Tier.Low ? 0.6 : 0.8;
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.bloomStrength, 0.5, 1.05);
     this.composer.addPass(this.bloom);
     this.post = new ShaderPass(POST_SHADER);
     this.composer.addPass(this.post);
     this.composer.addPass(new OutputPass());
+    this.applyBloomSize();
 
     window.addEventListener('resize', this.onResize);
     window.addEventListener('orientationchange', () => window.setTimeout(this.onResize, 200));
   }
 
+  get qualityLabel(): string {
+    return ['LOW', 'MEDIUM', 'HIGH'][this.tier];
+  }
+
+  get pixelRatioNow(): number {
+    return this.pixelRatio;
+  }
+
   onResizeCallback(cb: () => void): void {
     this.resizeCbs.push(cb);
     cb();
+  }
+
+  private applyBloomSize(): void {
+    this.bloom.setSize(Math.max(64, (window.innerWidth * this.pixelRatio) / 2), Math.max(64, (window.innerHeight * this.pixelRatio) / 2));
   }
 
   private onResize = (): void => {
@@ -174,6 +211,7 @@ export class GfxRenderer {
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(this.pixelRatio);
     this.composer.setSize(w, h);
+    this.applyBloomSize();
     this.resizeCbs.forEach((cb) => cb());
   };
 
@@ -181,6 +219,7 @@ export class GfxRenderer {
     return window.innerHeight * this.pixelRatio;
   }
 
+  /** Palette-driven fog, sky and a procedural neon environment map (gives metals/glass real reflections). */
   setTheme(p: Palette): void {
     const fog = new THREE.Color(p.fog);
     (this.scene.background as THREE.Color).copy(fog);
@@ -189,36 +228,66 @@ export class GfxRenderer {
     this.skyMat.uniforms.uLow.value.set(p.fog).lerp(new THREE.Color(p.secondary), 0.35);
     this.hemi.color.set(p.primary).lerp(new THREE.Color(0x4455ff), 0.5);
     this.hemi.groundColor.set(p.secondary).multiplyScalar(0.18);
+    this.buildEnvironment(p);
   }
 
-  /** Keeps the shadow frustum centred on the action. */
+  private buildEnvironment(p: Palette): void {
+    const env = new THREE.Scene();
+    env.background = new THREE.Color(p.fog).multiplyScalar(0.6);
+    const panel = new THREE.PlaneGeometry(1, 1);
+    const add = (color: number, k: number, x: number, y: number, z: number, sx: number, sy: number): void => {
+      const m = new THREE.Mesh(panel, new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(k), side: THREE.DoubleSide }));
+      m.position.set(x, y, z);
+      m.scale.set(sx, sy, 1);
+      m.lookAt(0, 0, 0);
+      env.add(m);
+    };
+    add(p.primary, 3, 12, 6, 8, 10, 3);
+    add(p.secondary, 3, -12, 8, -6, 12, 3);
+    add(p.accent, 2.4, 0, 14, -12, 14, 2);
+    add(p.primary, 1.8, -10, 3, 12, 8, 2);
+    add(p.secondary, 1.8, 10, 2, -12, 8, 2);
+    add(0xffffff, 1, 0, 18, 0, 6, 6);
+    const rt = this.pmrem.fromScene(env, 0.03);
+    this.envRT?.dispose();
+    this.envRT = rt;
+    this.scene.environment = rt.texture;
+    env.traverse((o) => {
+      if (o instanceof THREE.Mesh) (o.material as THREE.Material).dispose();
+    });
+    panel.dispose();
+  }
+
+  /** Keeps the (small) character shadow frustum centred on the action. */
   followShadow(target: THREE.Vector3): void {
     this.sun.target.position.set(target.x, 0, target.z);
-    this.sun.position.set(target.x + 30, 60, target.z + 20);
+    this.sun.position.set(target.x + 22, 50, target.z + 16);
     this.sun.target.updateMatrixWorld();
   }
 
-  /** Dynamic resolution: drops pixel ratio when FPS sags, recovers slowly when healthy. */
+  /** Dynamic quality: resolution first, then bloom, then shadows. Recovers resolution slowly. */
   private adaptQuality(rawDt: number): void {
     if (rawDt <= 0) return;
-    this.fpsAvg += (1 / rawDt - this.fpsAvg) * 0.05;
-    if (this.fpsAvg < 46) {
-      this.lowTimer += rawDt;
-      this.highTimer = 0;
-    } else if (this.fpsAvg > 58) {
-      this.highTimer += rawDt;
+    this.fpsAvg += (1 / rawDt - this.fpsAvg) * 0.04;
+    if (this.fpsAvg < 50) { this.lowTimer += rawDt; this.highTimer = 0; }
+    else if (this.fpsAvg > 58) { this.highTimer += rawDt; this.lowTimer = 0; }
+    else { this.lowTimer = 0; this.highTimer = 0; }
+
+    if (this.lowTimer > 1.2) {
       this.lowTimer = 0;
-    } else {
-      this.lowTimer = 0;
+      if (this.pixelRatio > 0.75) {
+        this.pixelRatio = Math.max(0.75, this.pixelRatio - 0.125);
+        this.onResize();
+      } else if (this.bloom.enabled) {
+        this.bloom.enabled = false;
+      } else if (this.renderer.shadowMap.enabled) {
+        this.renderer.shadowMap.enabled = false;
+        this.sun.castShadow = false;
+        this.scene.traverse((o) => { if (o instanceof THREE.Mesh && o.material) (o.material as THREE.Material).needsUpdate = true; });
+      }
+    } else if (this.highTimer > 10 && this.pixelRatio < this.maxPixelRatio) {
       this.highTimer = 0;
-    }
-    if (this.lowTimer > 1.5 && this.pixelRatio > 0.7) {
-      this.pixelRatio = Math.max(0.7, this.pixelRatio - 0.15);
-      this.lowTimer = 0;
-      this.onResize();
-    } else if (this.highTimer > 8 && this.pixelRatio < this.maxPixelRatio) {
-      this.pixelRatio = Math.min(this.maxPixelRatio, this.pixelRatio + 0.1);
-      this.highTimer = 0;
+      this.pixelRatio = Math.min(this.maxPixelRatio, this.pixelRatio + 0.125);
       this.onResize();
     }
   }
@@ -232,7 +301,12 @@ export class GfxRenderer {
     u.uHurt.value = this.hurt;
     this.sky.position.copy(this.camera.position);
     this.stars.position.copy(this.camera.position);
+    this.renderer.info.reset();
     this.composer.render(dt);
     this.adaptQuality(rawDt);
+  }
+
+  get stats(): { calls: number; tris: number; fps: number } {
+    return { calls: this.renderer.info.render.calls, tris: this.renderer.info.render.triangles, fps: this.fpsAvg };
   }
 }

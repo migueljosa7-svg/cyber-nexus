@@ -54,6 +54,9 @@ class Game implements GameContext {
   private tmpV = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
   private lookTarget = new THREE.Vector3();
+  private focus = new THREE.Vector3();
+  private statsEl: HTMLDivElement | null = null;
+  private statsT = 0;
 
   constructor() {
     this.canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -88,7 +91,32 @@ class Game implements GameContext {
     this.input.enabled = false;
     this.ui.showMenu(this.best);
 
+    if (new URLSearchParams(location.search).has('debug')) this.toggleStats();
+    window.addEventListener('keydown', (e) => { if (e.code === 'F3') { e.preventDefault(); this.toggleStats(); } });
     requestAnimationFrame(this.frame);
+  }
+
+  /** Performance overlay (F3 or ?debug): FPS, draw calls, triangles, resolution scale and quality tier. */
+  private toggleStats(): void {
+    if (this.statsEl) {
+      this.statsEl.remove();
+      this.statsEl = null;
+      return;
+    }
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:99;padding:4px 8px;font:11px/1.4 monospace;color:#3dffb4;background:rgba(0,0,0,.6);pointer-events:none;white-space:pre';
+    document.body.appendChild(el);
+    this.statsEl = el;
+  }
+
+  private updateStats(rawDt: number): void {
+    if (!this.statsEl) return;
+    this.statsT += rawDt;
+    if (this.statsT < 0.5) return;
+    this.statsT = 0;
+    const s = this.gfx.stats;
+    this.statsEl.textContent = `${s.fps.toFixed(0)} FPS | ${s.calls} draws | ${(s.tris / 1000).toFixed(0)}k tris
+res x${this.gfx.pixelRatioNow.toFixed(2)} | ${this.gfx.qualityLabel} | ${this.gfx.gpuName.slice(0, 48)}`;
   }
 
   // ───────────────────────────── GameContext helpers ─────────────────────────────
@@ -372,6 +400,7 @@ class Game implements GameContext {
     this.fx.setScale(this.gfx.drawingHeight, this.camera.fov);
     this.gfx.followShadow(this.player.pos);
     this.gfx.render(rawDt, this.clock, rawDt);
+    this.updateStats(rawDt);
   };
 
   private tickIdle(dt: number): void {
@@ -474,7 +503,11 @@ class Game implements GameContext {
 
   private updateCamera(rawDt: number, snap = false): void {
     const { camera, player, world } = this;
-    const target = this.lookTarget.set(player.pos.x, player.pos.y + 1.7, player.pos.z);
+    const lead = 0.09;
+    const goal = this.lookTarget.set(player.pos.x + player.vel.x * lead, player.pos.y + 1.7, player.pos.z + player.vel.z * lead);
+    if (snap) this.focus.copy(goal);
+    else this.focus.lerp(goal, 1 - Math.exp(-rawDt * 12));
+    const target = this.focus;
     const cp = Math.cos(this.camPitch);
     const dir = this.tmpDir.set(Math.sin(this.camYaw) * cp, Math.sin(this.camPitch), Math.cos(this.camYaw) * cp);
     let d = CAM_DIST + (player.dashing > 0 ? 1.8 : 0);
@@ -484,7 +517,7 @@ class Game implements GameContext {
     const desired = this.tmpV.copy(target).addScaledVector(dir, this.camDist);
     desired.y = Math.max(0.6, desired.y);
     if (snap) camera.position.copy(desired);
-    else camera.position.lerp(desired, 1 - Math.exp(-rawDt * 20));
+    else camera.position.lerp(desired, 1 - Math.exp(-rawDt * 24));
 
     camera.lookAt(target.x, target.y + 0.2, target.z);
 

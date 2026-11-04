@@ -22,6 +22,15 @@ npm run preview    # sirve el build de producción para probarlo
 | Q: pulso EMP · E: escudo de datos · R: ráfaga cuántica | EMP · SHLD · QNTM |
 | F: hackear terminal · P: pausa | HACK (aparece junto a terminales) |
 
+## Rendimiento
+
+- **Draw calls ~30-70 y ~20k triángulos por frame**: edificios, neones, lámparas, puentes e islas son `InstancedMesh`; ventanas y bordes de neón se calculan en el shader (sin texturas ni geometría por chunk).
+- **Lluvia digital 100% en GPU** (cero trabajo de CPU por frame) y chunks que solo reescriben buffers de instancias (sin tirones al cruzar chunks).
+- **Recursos compartidos**: enemigos, efectos de golpe y proyectiles usan pools y geometrías/materiales compartidos; no se crea nada dentro del bucle.
+- **Calidad adaptativa**: baja primero la resolución, luego el bloom y por último las sombras si los FPS caen; la recupera poco a poco. MSAA y sombras solo en GPUs capaces; en móvil sin sombras.
+- **Colisiones** con cajas AABB / distancia (sin motor de físicas), sin alocaciones.
+- Pulsa **F3** (o abre `/?debug`) para ver FPS, draw calls, triángulos, escala de resolución y nivel de calidad.
+
 ## Estructura
 
 ```
