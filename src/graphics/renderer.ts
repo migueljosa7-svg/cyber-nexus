@@ -57,6 +57,15 @@ const POST_SHADER = {
 
 enum Tier { Low = 0, Medium = 1, High = 2 }
 
+export const QUALITY_KEY = 'cybernexus_quality';
+export type QualitySetting = 'auto' | 'low' | 'medium' | 'high';
+export function readQualitySetting(): QualitySetting {
+  try {
+    const v = localStorage.getItem(QUALITY_KEY);
+    return v === 'low' || v === 'medium' || v === 'high' ? v : 'auto';
+  } catch { return 'auto'; }
+}
+
 export type BloomMode = 'full' | 'reduced' | 'off';
 
 /** WebGL renderer, scene, camera, lights, sky, procedural environment reflections and the post chain. */
@@ -80,6 +89,13 @@ export class GfxRenderer {
   private tier: Tier;
   private baseBloom: number;
   private shadowsSupported: boolean;
+  private rim: THREE.DirectionalLight | null = null;
+  private palette: Palette | null = null;
+  private starMat!: THREE.PointsMaterial;
+  private tmpA = new THREE.Color();
+  private tmpB = new THREE.Color();
+  /** Sun elevation (-1..1) of the current time of day. */
+  sunHeight = -0.5;
 
   pixelRatio: number;
   bloomMode: BloomMode = 'full';
@@ -91,12 +107,14 @@ export class GfxRenderer {
     const gl = this.renderer.getContext();
     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
     this.gpuName = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'unknown';
-    const weak = IS_TOUCH || /intel|swiftshader|llvmpipe|mali-4|adreno \(tm\) [2-4]\d\d/i.test(this.gpuName);
-
-    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, weak ? 1.25 : CFG.maxPixelRatio);
-    this.pixelRatio = this.maxPixelRatio;
-    this.tier = IS_TOUCH ? Tier.Low : weak ? Tier.Medium : Tier.High;
+    // Quality preset: ?q=low|medium|high, or the menu setting; otherwise guessed from the GPU name.
+    const q = new URLSearchParams(location.search).get('q') ?? readQualitySetting();
+    const discrete = /nvidia|geforce|rtx|gtx|quadro|radeon (rx|pro|vii)|apple (m\d|gpu)/i.test(this.gpuName);
+    const auto = IS_TOUCH ? Tier.Low : discrete ? Tier.High : Tier.Medium;
+    this.tier = q === 'low' ? Tier.Low : q === 'medium' ? Tier.Medium : q === 'high' ? Tier.High : auto;
     this.shadowsSupported = this.tier !== Tier.Low;
+    this.maxPixelRatio = this.computeMaxRatio();
+    this.pixelRatio = this.maxPixelRatio;
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -119,7 +137,7 @@ export class GfxRenderer {
     // Directional light: only characters cast shadows, so a high-resolution map over a tight frustum is cheap.
     this.sun = new THREE.DirectionalLight(0x9db4ff, 1.6);
     this.sun.castShadow = this.shadowsSupported;
-    const sm = this.tier === Tier.High ? 2048 : 1024;
+    const sm = 1024;
     this.sun.shadow.mapSize.set(sm, sm);
     const sc = this.sun.shadow.camera;
     sc.left = -26; sc.right = 26; sc.top = 26; sc.bottom = -26; sc.near = 1; sc.far = 130;
@@ -131,6 +149,7 @@ export class GfxRenderer {
       const rim = new THREE.DirectionalLight(0xff2bd6, 0.55);
       rim.position.set(-40, 20, -30);
       this.scene.add(rim);
+      this.rim = rim;
     }
 
     this.skyMat = new THREE.ShaderMaterial({
@@ -167,13 +186,15 @@ export class GfxRenderer {
     }
     const sg = new THREE.BufferGeometry();
     sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
-    this.stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xbfd0ff, size: 1.4, sizeAttenuation: false, fog: false, transparent: true, opacity: 0.8, depthWrite: false }));
+    this.starMat = new THREE.PointsMaterial({ color: 0xbfd0ff, size: 1.4, sizeAttenuation: false, fog: false, transparent: true, opacity: 0.8, depthWrite: false });
+    this.stars = new THREE.Points(sg, this.starMat);
     this.stars.frustumCulled = false;
     this.scene.add(this.stars);
 
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
 
-    const samples = this.tier === Tier.High ? 4 : this.tier === Tier.Medium ? 2 : 0;
+    // MSAA on a half-float HDR target is expensive: only worth it on discrete GPUs.
+    const samples = this.tier === Tier.High ? 2 : 0;
     const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.setPixelRatio(this.pixelRatio);
@@ -201,11 +222,21 @@ export class GfxRenderer {
   }
 
   private applyBloomSize(): void {
-    const k = this.bloomMode === 'reduced' ? 0.25 : 0.5;
+    const k = this.bloomMode === 'reduced' ? 0.18 : 0.33;
     this.bloom.setSize(Math.max(64, window.innerWidth * this.pixelRatio * k), Math.max(64, window.innerHeight * this.pixelRatio * k));
   }
 
+  /** Largest render scale allowed for the current tier: device ratio, tier cap and a total-pixel budget. */
+  private computeMaxRatio(): number {
+    const budget = this.tier === Tier.High ? 3.6e6 : this.tier === Tier.Medium ? 2.1e6 : 1.3e6;
+    const cap = this.tier === Tier.High ? CFG.maxPixelRatio : 1.25;
+    const fit = Math.sqrt(budget / Math.max(1, window.innerWidth * window.innerHeight));
+    return Math.max(0.55, Math.min(window.devicePixelRatio || 1, cap, fit));
+  }
+
   private onResize = (): void => {
+    this.maxPixelRatio = this.computeMaxRatio();
+    this.pixelRatio = Math.min(this.pixelRatio, this.maxPixelRatio);
     const w = window.innerWidth;
     const h = window.innerHeight;
     this.camera.aspect = w / h;
@@ -228,17 +259,68 @@ export class GfxRenderer {
     this.composer.render(0);
   }
 
-  /** Night-city fog, sky and a procedural neon environment map (gives metals and glass real reflections). */
-  setTheme(p: Palette): void {
-    const fog = new THREE.Color(p.fog);
-    (this.scene.background as THREE.Color).copy(fog);
-    (this.scene.fog as THREE.FogExp2).color.copy(fog);
-    this.skyMat.uniforms.uMid.value.set(p.fog).lerp(new THREE.Color(p.primary), 0.18);
-    this.skyMat.uniforms.uLow.value.set(p.fog).lerp(new THREE.Color(p.secondary), 0.35);
-    this.hemi.color.set(p.primary).lerp(new THREE.Color(0x4455ff), 0.5);
-    this.hemi.groundColor.set(p.secondary).multiplyScalar(0.18);
-    this.buildEnvironment(p);
+  /** Window interior ray-cast range in metres per quality tier. */
+  get interiorRange(): number {
+    return this.tier === Tier.High ? 100 : this.tier === Tier.Medium ? 70 : 42;
   }
+
+  /** Night-city palette + procedural neon environment map (real reflections on metal and glass). */
+  setTheme(p: Palette): void {
+    this.palette = p;
+    this.buildEnvironment(p);
+    this.setTimeOfDay(0.8);
+  }
+
+  /**
+   * Day/night cycle. `t` in [0,1): 0 = midnight, 0.25 = sunrise, 0.5 = noon, 0.75 = sunset.
+   * Drives sky, fog, sun/moon light and direction, exposure, reflections, stars and bloom.
+   * Returns the daylight factor (0..1) and fog density for the city shaders.
+   */
+  setTimeOfDay(t: number): { day: number; fog: number } {
+    const p = this.palette;
+    const sunH = Math.sin((t - 0.25) * Math.PI * 2);
+    this.sunHeight = sunH;
+    const sm = (a: number, b: number, x: number): number => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+    const day = sm(-0.12, 0.32, sunH);
+    const twi = Math.max(0, 1 - Math.abs(sunH) / 0.32) * (0.4 + 0.6 * (1 - Math.abs(day - 0.5) * 2));
+    const nightFog = p ? this.tmpA.set(p.fog) : this.tmpA.set(0x05061a);
+
+    // sky gradient
+    const top = this.skyMat.uniforms.uTop.value as THREE.Color;
+    const mid = this.skyMat.uniforms.uMid.value as THREE.Color;
+    const low = this.skyMat.uniforms.uLow.value as THREE.Color;
+    top.set(0x02030c).lerp(this.tmpB.set(0x3d7be0), day);
+    mid.copy(nightFog);
+    if (p) mid.lerp(this.tmpB.set(p.primary), 0.18);
+    mid.lerp(this.tmpB.set(0x8dbbf2), day).lerp(this.tmpB.set(0xff8a4a), twi * 0.35);
+    low.copy(nightFog);
+    if (p) low.lerp(this.tmpB.set(p.secondary), 0.35);
+    low.lerp(this.tmpB.set(0xcfe2f4), day).lerp(this.tmpB.set(0xff7a3a), twi * 0.7);
+
+    // fog = horizon colour so distant buildings melt into the sky
+    const fogC = (this.scene.fog as THREE.FogExp2).color;
+    fogC.copy(low).multiplyScalar(0.55 + 0.35 * day);
+    (this.scene.background as THREE.Color).copy(fogC);
+    const fogD = 0.0125 - 0.0058 * day;
+    (this.scene.fog as THREE.FogExp2).density = fogD;
+
+    // lights
+    this.hemi.color.set(p ? p.primary : 0x00f0ff).lerp(this.tmpB.set(0x4455ff), 0.5).lerp(this.tmpB.set(0xbcd2ff), day);
+    this.hemi.groundColor.set(p ? p.secondary : 0xff2bd6).multiplyScalar(0.18).lerp(this.tmpB.set(0x4a4136), day);
+    this.hemi.intensity = 0.55 + 0.75 * day;
+    this.sun.color.set(0x9db4ff).lerp(this.tmpB.set(0xfff1da), day).lerp(this.tmpB.set(0xff9a58), twi * 0.6);
+    this.sun.intensity = 1.5 + 1.7 * day;
+    if (this.rim) this.rim.intensity = 0.55 * (1 - day) + 0.05;
+    this.scene.environmentIntensity = 0.45 + 0.5 * day;
+    this.renderer.toneMappingExposure = 0.95 - 0.1 * day;
+    this.starMat.opacity = 0.8 * (1 - day);
+    this.stars.visible = day < 0.97;
+    const bloomMul = this.bloomMode === 'full' ? 1 : 0.6;
+    this.bloom.strength = this.baseBloom * bloomMul * (1 - 0.5 * day);
+    this.sunAng = t * Math.PI * 2;
+    return { day, fog: fogD };
+  }
+  private sunAng = 0;
 
   private buildEnvironment(p: Palette): void {
     const env = new THREE.Scene();
@@ -271,14 +353,15 @@ export class GfxRenderer {
   /** Keeps the (small) character shadow frustum centred on the action. */
   followShadow(target: THREE.Vector3): void {
     this.sun.target.position.set(target.x, 0, target.z);
-    this.sun.position.set(target.x + 24, 52, target.z + 18);
+    const h = Math.max(0.25, this.sunHeight);
+    this.sun.position.set(target.x + Math.cos(this.sunAng) * 38, 26 + 30 * h, target.z + 18);
     this.sun.target.updateMatrixWorld();
   }
 
   /** Lowers quality one notch: resolution first, then bloom, then shadows. Returns a description or null. */
   stepDown(): string | null {
-    if (this.pixelRatio > 0.65) {
-      this.pixelRatio = Math.max(0.65, this.pixelRatio - 0.125);
+    if (this.pixelRatio > 0.55) {
+      this.pixelRatio = Math.max(0.55, this.pixelRatio - 0.15);
       this.onResize();
       return `resolution x${this.pixelRatio.toFixed(2)}`;
     }
@@ -322,7 +405,7 @@ export class GfxRenderer {
       return 'bloom full';
     }
     if (this.pixelRatio < this.maxPixelRatio) {
-      this.pixelRatio = Math.min(this.maxPixelRatio, this.pixelRatio + 0.125);
+      this.pixelRatio = Math.min(this.maxPixelRatio, this.pixelRatio + 0.1);
       this.onResize();
       return `resolution x${this.pixelRatio.toFixed(2)}`;
     }

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Action, Input } from '../input';
 import type { AudioFX } from '../audio';
 import { CITY } from '../config';
+import { QUALITY_KEY, readQualitySetting, type QualitySetting } from '../graphics/renderer';
 import type { MissionLogData, MissionMarker } from '../systems/missions';
 
 export interface HudAbility { key: string; name: string; left: number; cooldown: number; cost: number }
@@ -293,6 +294,7 @@ export class HUD {
           <button class="btn primary" data-act="continue" type="button">CONTINUE</button>
           <button class="btn" data-act="new" type="button">NEW GAME</button>
           <button class="btn ghost" data-act="controls" type="button">CONTROLS</button>
+          <button class="btn ghost" data-act="quality" type="button"></button>
           <div class="controls hidden">
             ${touch
               ? `<ul><li><b>Floating stick</b> move (left side)</li><li><b>Drag right side</b> camera</li><li><b>ATK / SHOT</b> blade combo / kinetic shot</li><li><b>JUMP</b> (x2) · <b>DASH</b> i-frames</li><li><b>EMP / SHLD / QNTM</b> super powers</li><li><b>HACK</b> opens the console: tap the chips</li></ul>`
@@ -347,6 +349,17 @@ export class HUD {
       this.audio.unlock();
       this.audio.click();
       q('.controls').classList.toggle('hidden');
+    });
+    const qBtn = q('[data-act="quality"]');
+    const qOrder: QualitySetting[] = ['auto', 'low', 'medium', 'high'];
+    const qLabel = (): string => `GRAPHICS: ${readQualitySetting().toUpperCase()}`;
+    qBtn.textContent = qLabel();
+    qBtn.addEventListener('click', () => {
+      this.audio.click();
+      const next = qOrder[(qOrder.indexOf(readQualitySetting()) + 1) % qOrder.length];
+      try { localStorage.setItem(QUALITY_KEY, next); } catch { /* storage unavailable */ }
+      qBtn.textContent = `${qLabel()} — RELOADING…`;
+      window.setTimeout(() => location.reload(), 250);
     });
     if (touch) this.buildTouch();
   }

@@ -90,6 +90,7 @@ const BUILDING_VERT_DECL = /* glsl */ `
   varying vec3 vNrm;
   varying float vSeed;
   varying vec3 vScale;
+  varying vec3 vWPos;
 `;
 
 const BUILDING_VERT_MAIN = /* glsl */ `
@@ -98,16 +99,74 @@ const BUILDING_VERT_MAIN = /* glsl */ `
   vNrm = normal;
   vSeed = aSeed;
   vScale = sc;
+  vWPos = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
 `;
 
 const BUILDING_FRAG_DECL = /* glsl */ `
   uniform float uTime;
+  uniform float uDay;
+  uniform float uIntRange;
   varying vec3 vLocal;
   varying vec3 vNrm;
   varying float vSeed;
+  varying vec3 vWPos;
   varying vec3 vScale;
   ${HASH_GLSL}
   ${PICK_GLSL}
+
+  // Interior mapping: ray-cast the view ray against a virtual room box behind the glass. No geometry, no textures.
+  // cell: position inside one room cell (0..1), rd: view ray in room space (x along facade, y up, z into the room).
+  vec3 roomShade(vec2 cell, vec3 rd, float rs, float lit, vec3 lc, float day) {
+    const float W = 2.7;
+    const float H = 3.6;
+    const float D = 4.8;
+    vec3 o = vec3(cell.x * W, cell.y * H, 0.0);
+    vec3 sd = vec3(abs(rd.x) < 1e-3 ? 1e-3 : rd.x, abs(rd.y) < 1e-3 ? 1e-3 : rd.y, max(rd.z, 0.05));
+    vec3 tt = (step(vec3(0.0), sd) * vec3(W, H, D) - o) / sd;
+    float t = min(min(tt.x, tt.y), tt.z);
+    vec3 p = o + sd * t;
+    vec3 wall = mix(vec3(0.66, 0.6, 0.52), vec3(0.34, 0.42, 0.52), hash11(rs * 3.1));
+    wall = mix(wall, vec3(0.55, 0.28, 0.32), step(0.82, hash11(rs * 5.7)));
+    vec3 alb;
+    float isBack = 0.0;
+    float isCeil = 0.0;
+    if (t >= tt.z - 1e-4) {
+      isBack = 1.0;
+      vec2 q = vec2(p.x / W, p.y / H);
+      alb = wall;
+      // window-light panel / picture frame
+      float pf = step(0.62, q.x) * step(q.x, 0.9) * step(0.42, q.y) * step(q.y, 0.78) * step(0.45, hash11(rs * 7.3));
+      alb = mix(alb, vec3(0.2, 0.34, 0.5) * (0.6 + hash11(rs)), pf);
+      // desk or sofa block
+      float blk = step(0.06, q.x) * step(q.x, 0.55) * step(q.y, 0.27) * step(0.4, hash11(rs * 9.1));
+      alb = mix(alb, vec3(0.22, 0.13, 0.1) * (0.6 + hash11(rs * 2.0)), blk);
+      // a person standing, now and then
+      float px = (0.2 + 0.6 * hash11(rs * 11.3)) * W;
+      vec2 pq = vec2(p.x - px, p.y);
+      float body = step(abs(pq.x), 0.27 - pq.y * 0.05) * step(0.35, pq.y) * step(pq.y, 1.45);
+      float head = 1.0 - step(0.16, length(vec2(pq.x, pq.y - 1.62)));
+      float person = max(body, head) * step(0.86, hash11(rs * 13.7));
+      alb = mix(alb, vec3(0.04, 0.04, 0.06), person);
+    } else if (t >= tt.y - 1e-4) {
+      if (rd.y < 0.0) alb = vec3(0.3, 0.21, 0.15) * (0.7 + 0.5 * hash11(rs * 2.2));
+      else { alb = vec3(0.82); isCeil = 1.0; }
+    } else {
+      alb = wall * 0.86;
+    }
+    vec3 lamp = vec3(W * 0.5, H - 0.15, D * 0.45);
+    vec3 dl = p - lamp;
+    float lampL = 2.1 / (1.0 + 0.2 * dot(dl, dl));
+    // ambient: sunlight through the glass by day (fades towards the back of the room), practically nothing at night
+    vec3 amb = day * vec3(0.95, 0.97, 1.0) * (0.55 - 0.3 * p.z / D) + vec3(0.012);
+    vec3 light = amb;
+    // lit rooms at night: warm ceiling lamp; some unlit rooms glow with a flickering TV
+    light += lc * lit * lampL * (1.0 - 0.55 * day);
+    float tv = (1.0 - lit) * step(0.9, hash11(rs * 17.1)) * (1.0 - day);
+    light += vec3(0.25, 0.5, 1.0) * tv * (0.55 + 0.45 * sin(uTime * 7.0 + rs * 40.0)) * (1.3 / (1.0 + 0.1 * dot(p - vec3(W * 0.5, 1.0, D), p - vec3(W * 0.5, 1.0, D))));
+    vec3 col = alb * light;
+    col += lc * lit * isCeil * (1.0 - smoothstep(0.1, 0.55, length(p.xz - lamp.xz))) * 2.4;
+    return col;
+  }
 `;
 
 // Urban facades: concrete panels and dark reflective glass with sparse warm/cool window points, lit shopfronts at
@@ -135,6 +194,7 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
     baseCol *= 0.78 + 0.4 * pn;
     float seam = clamp(step(fy, 0.025) + step(fract(u / 3.0), 0.012), 0.0, 1.0);
     baseCol *= 1.0 - 0.45 * seam;
+    baseCol *= mix(1.0, 3.6, uDay);
     float win = 0.0;
     if (style == 0.0) {
       // Continuous ribbon glazing, broken into runs of varying length.
@@ -162,7 +222,7 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
     float ct = hash21(vec2(floor(u / 2.7), fidx) + 9.1 + vSeed);
     vec3 lc = ct < 0.55 ? vec3(1.0, 0.72, 0.42) : (ct < 0.88 ? vec3(0.55, 0.78, 1.0) : pickColor(hash21(vec2(fidx, 3.3) + vSeed)));
     float flick = 1.0 - 0.85 * step(0.95, hash21(vec2(floor(u / 2.7), fidx) + 3.0)) * step(0.0, sin(uTime * (5.0 + room * 6.0) + room * 40.0));
-    nEmis += lc * win * lit * flick * 0.95;
+    float litRoom = step(0.58, room) * step(5.0, v);
     // Continuous vertical LED strips, with a slow pulse travelling up the facade.
     float spacing = 4.5 + 5.0 * hash11(vSeed * 6.1);
     float su = abs(fract((u + seedH * 3.0) / spacing) - 0.5) * spacing;
@@ -185,6 +245,30 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
     nEmis += pickColor(hash11(vSeed * 4.4) * 0.9) * hb * (1.0 - smoothstep(0.05, 0.12, abs(v - hv))) * step(0.5, eU) * 2.2;
     float rb = step(0.6, hash11(vSeed * 3.9));
     nEmis += ledCol * rb * (1.0 - smoothstep(0.0, 0.12, vScale.y - v)) * 1.5;
+    // Neon / LED dressing fades out in daylight.
+    nEmis *= 1.0 - 0.85 * uDay;
+    if (win > 0.5) {
+      float dist = length(vViewPosition);
+      if (dist < uIntRange) {
+        vec3 vd = normalize(vWPos - cameraPosition);
+        vec3 tn = aN.x > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        vec3 rd = vec3(dot(vd, tn), vd.y, -dot(vd, vNrm));
+        float rs = hash21(vec2(floor(u / 2.7), fidx) + vSeed * 7.0) * 97.0;
+        vec3 inside = roomShade(vec2(fract(u / 2.7), fy), rd, rs, litRoom, lc, uDay);
+        // Curtains / blinds on some windows, mostly drawn in the daytime.
+        float blindAmt = step(0.7, hash11(rs * 1.9)) * (0.35 + 0.55 * hash11(rs * 4.1));
+        float blind = step(1.0 - blindAmt, fy) * (0.4 + 0.6 * uDay);
+        vec3 blindCol = mix(vec3(0.5, 0.42, 0.36), vec3(0.8, 0.78, 0.72), hash11(rs * 6.3)) * (0.08 + 0.55 * uDay + 0.45 * litRoom);
+        inside = mix(inside, blindCol * (0.85 + 0.15 * sin(fy * 90.0)), blind);
+        // Glass reflects the sky: stronger at grazing angles and by day.
+        float fres = 0.05 + 0.3 * pow(1.0 - clamp(rd.z, 0.0, 1.0), 4.0);
+        vec3 sky = mix(vec3(0.45, 0.6, 0.9), vec3(0.85, 0.92, 1.0), clamp(vd.y * 2.0, 0.0, 1.0));
+        inside = mix(inside, sky * 0.9, fres * (0.15 + 0.85 * uDay));
+        nEmis += inside * win * 0.95 * mix(1.0, flick, litRoom);
+      } else {
+        nEmis += lc * win * litRoom * flick * 0.55;
+      }
+    }
   } else if (vNrm.y > 0.5) {
     baseCol = vec3(0.035);
     float eX = 0.5 * vScale.x - abs(vLocal.x);
@@ -193,6 +277,8 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
     nEmis += ledCol * rb * (1.0 - smoothstep(0.0, 0.18, min(eX, eZ))) * 1.7;
     float rl = step(0.985, hash21(floor(vec2(vLocal.x, vLocal.z) * 0.6) + vSeed));
     nEmis += vec3(1.0, 0.15, 0.12) * rl * 1.6 * step(sin(uTime * 3.0 + vSeed), 0.0);
+    nEmis *= 1.0 - 0.85 * uDay;
+    baseCol *= mix(1.0, 3.0, uDay);
   }
   diffuseColor.rgb = baseCol;
 `;
@@ -210,6 +296,7 @@ const FLOOR_VERT_DECL = /* glsl */ `varying vec2 vWXZ;`;
 const FLOOR_VERT_MAIN = /* glsl */ `vWXZ = (modelMatrix * vec4(position, 1.0)).xz;`;
 const FLOOR_FRAG_DECL = /* glsl */ `
   uniform float uS;
+  uniform float uDay;
   varying vec2 vWXZ;
   ${PICK_GLSL}
 `;
@@ -222,6 +309,7 @@ const FLOOR_FRAG_COLOR = /* glsl */ `
   float inWalk = max(step(dx, 7.0), step(dz, 7.0)) * (1.0 - inCarr);
   float inLot = 1.0 - max(inCarr, inWalk);
   diffuseColor.rgb = inCarr * vec3(0.012, 0.013, 0.02) + inWalk * vec3(0.062, 0.064, 0.072) + inLot * vec3(0.03, 0.032, 0.038);
+  diffuseColor.rgb *= mix(1.0, 3.2, uDay);
 `;
 const FLOOR_FRAG_METAL = /* glsl */ `
   metalnessFactor *= mix(1.0, 0.12, inWalk + inLot);
@@ -248,13 +336,13 @@ const FLOOR_FRAG_EMIT = /* glsl */ `
   fe += vec3(0.5, 0.55, 0.65) * inWalk * step(0.485, max(g2.x, g2.y)) * 0.025;
   vec2 g4 = abs(fract(vWXZ / 4.0) - 0.5);
   fe += vec3(0.4, 0.45, 0.55) * inLot * step(0.49, max(g4.x, g4.y)) * 0.015;
-  totalEmissiveRadiance += fe;
+  totalEmissiveRadiance += fe * (1.0 - 0.8 * uDay);
 `;
 
 const LAMP_VERT_PATCH = /* glsl */ `
   float lampSeed = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);
   float lampFlick = 1.0 - 0.9 * step(0.93, fract(sin(floor(uTime * (6.0 + lampSeed * 6.0)) * 91.7 + lampSeed * 400.0) * 43758.5453)) * step(0.7, lampSeed);
-  vColor *= lampFlick;
+  vColor *= lampFlick * (1.0 - 0.92 * uDay);
 `;
 
 const BILL_VERT = /* glsl */ `
@@ -274,6 +362,7 @@ const BILL_VERT = /* glsl */ `
 
 const BILL_FRAG = /* glsl */ `
   uniform float uTime;
+  uniform float uDay;
   varying vec2 vUv;
   varying float vSeed;
   varying float vFog;
@@ -311,7 +400,7 @@ const BILL_FRAG = /* glsl */ `
     col *= 0.82 + 0.18 * sin(uv.y * 240.0 + t * 8.0);
     col *= 0.88 + 0.12 * step(0.12, hash11(floor(t * 12.0) + vSeed));
     float lum = max(max(col.r, col.g), col.b);
-    float alpha = max(clamp(lum * 0.8, 0.0, 0.92), 0.1) * (1.0 - vFog);
+    float alpha = max(clamp(lum * 0.8, 0.0, 0.92), 0.1) * (1.0 - vFog) * (1.0 - 0.75 * uDay);
     gl_FragColor = vec4((col + vec3(0.01, 0.04, 0.07)) * (1.0 - vFog), alpha);
   }
 `;
@@ -375,6 +464,10 @@ export class City {
   private billMesh: THREE.InstancedMesh;
   private billSeed: THREE.InstancedBufferAttribute;
   private uTime = { value: 0 };
+  private uDay = { value: 0 };
+  private uIntRange = { value: 70 };
+  private neonMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  private billFog = { value: 0.0125 };
   private uC = [new THREE.Color(), new THREE.Color(), new THREE.Color()];
   private rainCenter = new THREE.Vector3();
 
@@ -405,6 +498,7 @@ export class City {
     this.floorMat = new THREE.MeshStandardMaterial({ color: 0x0a0c16, roughness: 1, roughnessMap: roughTex, metalness: 0.7, envMapIntensity: 0.9 });
     this.floorMat.onBeforeCompile = (shader) => {
       shader.uniforms.uS = { value: S };
+      shader.uniforms.uDay = this.uDay;
       shader.uniforms.uC1 = { value: this.uC[0] };
       shader.uniforms.uC2 = { value: this.uC[1] };
       shader.uniforms.uC3 = { value: this.uC[2] };
@@ -427,6 +521,8 @@ export class City {
     const bMat = new THREE.MeshStandardMaterial({ color: 0x090b16, roughness: 0.55, metalness: 0.7, envMapIntensity: 0.7 });
     bMat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.uTime;
+      shader.uniforms.uDay = this.uDay;
+      shader.uniforms.uIntRange = this.uIntRange;
       shader.uniforms.uC1 = { value: this.uC[0] };
       shader.uniforms.uC2 = { value: this.uC[1] };
       shader.uniforms.uC3 = { value: this.uC[2] };
@@ -447,15 +543,16 @@ export class City {
     this.buildingMesh = this.makeInstanced(unit, bMat, MAX_BUILDINGS);
 
     // Static neon (HDR, feeds bloom) and flickering lamp heads.
-    this.neonMesh = this.makeInstanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff }), MAX_NEON);
+    this.neonMesh = this.makeInstanced(new THREE.BoxGeometry(1, 1, 1), this.neonMat, MAX_NEON);
     this.neonMesh.setColorAt(0, this.tmpC.setRGB(1, 1, 1));
     this.neonMesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
 
     const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     lampMat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.uTime;
+      shader.uniforms.uDay = this.uDay;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uDay;')
         .replace('#include <color_vertex>', `#include <color_vertex>\n${LAMP_VERT_PATCH}`);
     };
     this.lampMesh = this.makeInstanced(new THREE.BoxGeometry(1, 1, 1), lampMat, MAX_LAMPS);
@@ -470,7 +567,7 @@ export class City {
     const billMat = new THREE.ShaderMaterial({
       vertexShader: BILL_VERT,
       fragmentShader: BILL_FRAG,
-      uniforms: { uTime: this.uTime, uFogD: { value: 0.0125 }, uC1: { value: this.uC[0] }, uC2: { value: this.uC[1] }, uC3: { value: this.uC[2] } },
+      uniforms: { uTime: this.uTime, uDay: this.uDay, uFogD: this.billFog, uC1: { value: this.uC[0] }, uC2: { value: this.uC[1] }, uC3: { value: this.uC[2] } },
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
@@ -645,6 +742,18 @@ export class City {
     this.lastCz = ccz;
     this.dirty = true;
     this.rebuildInstances();
+  }
+
+  /** Time-of-day hook: 0 = night, 1 = full day. Dims neon / lamps and lightens materials; also tunes fog for billboards. */
+  setDay(day: number, fogDensity: number): void {
+    this.uDay.value = day;
+    this.billFog.value = fogDensity;
+    this.neonMat.color.setScalar(1 - 0.8 * day);
+  }
+
+  /** How far (metres) windows render real interiors; 0 disables them. */
+  setInteriorRange(m: number): void {
+    this.uIntRange.value = m;
   }
 
   update(dt: number, time: number, p: THREE.Vector3): void {

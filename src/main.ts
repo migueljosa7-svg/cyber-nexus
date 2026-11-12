@@ -77,6 +77,8 @@ class Game implements GameContext {
   private districtLabel = '';
   private saveT = 0;
   private starting = false;
+  /** Time of day in [0,1): 0 = midnight, 0.5 = noon. */
+  private tod = 0.8;
   private modalDepth = 0;
   private modalPaused = false;
   private rescueBtn: HTMLButtonElement | null = null;
@@ -144,11 +146,14 @@ class Game implements GameContext {
       onRespawn: () => void this.respawn(),
     });
 
+    const bootT: Array<[string, number]> = [];
+    (window as unknown as { __boot: typeof bootT }).__boot = bootT;
     const step = async (p: number, text: string, work: () => void | Promise<void>): Promise<void> => {
       this.ui.setLoading(p, text);
       await nextFrame();
-      await nextFrame();
+      const t0 = performance.now();
       await work();
+      bootT.push([text, Math.round(performance.now() - t0)]);
     };
 
     await step(0.08, 'INITIALIZING PARTICLE CORE ...', () => {
@@ -181,6 +186,7 @@ class Game implements GameContext {
     });
     await step(0.7, 'BUILDING METROPOLIS ...', () => {
       this.gfx.setTheme(PALETTE);
+      this.city.setInteriorRange(this.gfx.interiorRange);
       this.city.reset(WORLD_SEED, this.spawn);
       this.player.respawn(this.spawn);
       this.rig.update(1, true);
@@ -250,6 +256,9 @@ class Game implements GameContext {
       name: 'world',
       states: [...play, ...idle],
       update: (dt) => {
+        this.tod = (this.tod + dt / 420) % 1;
+        const tod = this.gfx.setTimeOfDay(this.tod);
+        this.city.setDay(tod.day, tod.fog);
         this.city.update(dt, e.clock, this.player.pos);
         this.fx.update(dt);
         this.state.time += dt;
@@ -331,7 +340,9 @@ class Game implements GameContext {
     if (this.districtT <= 0) {
       this.districtT = 0.5;
       const d = city.districtAt(player.pos.x, player.pos.z);
-      this.districtLabel = `D${d.id} · ${d.name}`;
+      const hrs = this.tod * 24;
+      const clock = `${String(Math.floor(hrs)).padStart(2, '0')}:${String(Math.floor((hrs % 1) * 60)).padStart(2, '0')}`;
+      this.districtLabel = `D${d.id} · ${d.name} · ${clock}`;
     }
     ui.setHud({
       hp: player.hp,

@@ -62,7 +62,7 @@ export class Engine {
   private lowStreak = 0;
   private highStreak = 0;
   private sinceChange = 0;
-  private grace = 4;
+  private grace = 2;
 
   constructor(private gfx: GfxRenderer) {}
 
@@ -138,12 +138,12 @@ export class Engine {
       this.winFrames = 0;
       return;
     }
-    if (this.winT < 1) return;
+    if (this.winT < 0.6) return;
     this.fps = this.winFrames / this.winT;
     this.winT = 0;
     this.winFrames = 0;
 
-    if (this.fps < 55) {
+    if (this.fps < 50) {
       this.lowStreak++;
       this.highStreak = 0;
     } else if (this.fps >= 58.5) {
@@ -154,12 +154,12 @@ export class Engine {
       this.highStreak = 0;
     }
 
-    if (this.lowStreak >= 2 && this.sinceChange > 1.5) {
+    if (this.lowStreak >= 2 && this.sinceChange > 0.9) {
       const change = this.gfx.stepDown();
       this.lowStreak = 0;
       this.sinceChange = 0;
       if (change) this.logQuality(`↓ ${change} (${this.fps.toFixed(0)} fps)`);
-    } else if (this.highStreak >= 12 && this.sinceChange > 10) {
+    } else if (this.highStreak >= 30 && this.sinceChange > 12) {
       const change = this.gfx.stepUp();
       this.highStreak = 0;
       this.sinceChange = 0;
