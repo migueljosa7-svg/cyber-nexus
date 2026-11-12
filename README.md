@@ -44,15 +44,10 @@ El progreso (nivel, créditos, equipo) se guarda solo en `localStorage` (CONTINU
 | **Eventos de calle** | `src/systems/progress.ts` | *Data Drops*: baliza dorada aleatoria cerca de ti (32 s) con créditos, RAM, energía o kits. |
 | **Logros** | `src/systems/progress.ts` (`/achievements`) | 16 trofeos con recompensa en créditos. |
 
-### Conectar un SDK real de anuncios
+### SDK de anuncios (integración nativa)
 
-El juego nunca concede una recompensa fuera del hook `onAdCompleted`. Hay un reproductor de relleno de 30 s ("transmisión corporativa") y adaptadores listos, detectados automáticamente por la presencia del SDK en `window`:
+`src/systems/sdk.ts` detecta, carga e inicializa el SDK correcto sin tocar `index.html`: `?adprovider=` (pruebas), el host/referrer (`crazygames.com`, `poki.com`), un SDK ya presente en `window`, o `VITE_ADSENSE_CLIENT=ca-pub-…` en el build (AdSense H5, con `data-adbreak-test` activado en localhost / `?adtest`). Los callbacks nativos (`adStarted/adFinished/adError` de CrazyGames, `rewardedBreak` de Poki, `adBreak` reward de AdSense) disparan `onAdStarted`, `onAdCompleted` y `onAdFailed`; también se envían `gameplayStart/Stop` y `loadingFinished`. El simulador de 30 s solo se usa si no hay plataforma (desarrollo local); si el SDK está esperado pero no carga (adblock) las ofertas se desactivan y nunca se regala recompensa.
 
-- **CrazyGames**: añade `<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js">` a `index.html` (usa `CrazyGames.SDK.ad.requestAd('rewarded', …)`).
-- **Poki**: añade el script de `PokiSDK` (usa `PokiSDK.rewardedBreak()`).
-- **Google AdSense H5 Games**: añade `adsbygoogle.js` con `data-ad-client` y activa `adBreak` (formato `reward`).
-
-Hooks globales: `ctx.ads.onAdStarted / onAdCompleted / onAdFailed` (analítica, silenciar música…) y, por petición, `ads.request('ram_refill', { onAdCompleted, onAdFailed })`. Se puede forzar proveedor con `?adprovider=crazygames|poki|adsense`. Con `?debug&adseconds=3` el relleno dura 3 s para pruebas (en producción siempre 30 s). Límites de sesión y enfriamientos por colocación en `LIMITS`.
 
 ## Arquitectura
 
@@ -80,7 +75,7 @@ src/combat.ts, src/enemies.ts, src/particles.ts, src/audio.ts, src/input.ts, src
 
 ## Rendimiento y calidad gráfica
 
-- Calidad por GPU: MSAA solo en GPUs dedicadas, presupuesto de píxeles por nivel (el render se escala para no pasar de ~1,3 / 2,1 / 3,6 Mpx), bloom a baja resolución y adaptación automática en ~1,5 s si baja de 50 FPS. Selector **GRAPHICS** en el menú (AUTO/LOW/MEDIUM/HIGH) o `?q=low|medium|high`.
+- Calidad por GPU (`TIER_PROFILES` en `config.ts`): RTX / RX 5000+ / Apple M → MSAA 4×, resolución nativa (hasta 2×), interiores a 120 m y máxima densidad de tráfico y peatones; otras dedicadas → MSAA 2×; integradas → perfil medio sin MSAA, presupuesto de píxeles y densidad reducidos; móvil → perfil bajo, bloom a baja resolución y adaptación automática en ~1,5 s si baja de 50 FPS. Selector **GRAPHICS** en el menú (AUTO/LOW/MEDIUM/HIGH) o `?q=low|medium|high`.
 - Las fuentes de Google se cargan sin bloquear el primer render. `?debug` muestra FPS y `window.__boot` los tiempos de cada fase de carga.
 - **Ciclo día/noche** (7 min): cielo, niebla, sol/luna con sombras, reflejos, neones, farolas y carteles. El reloj aparece junto al distrito.
 - **Interiores reales en ventanas** (interior mapping en el shader de fachadas, sin geometría extra): habitaciones con muebles, personas, persianas, luz cálida/TV por la noche y luz solar de día; alcance 42/70/100 m según calidad.

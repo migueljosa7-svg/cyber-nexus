@@ -94,7 +94,7 @@ class Game implements GameContext {
       if (g.modalDepth === 1 && g.engine.state === 'playing') {
         g.modalPaused = true;
         g.engine.setState('paused');
-        g.input.clearAll();
+        g.input.releaseKeys();
         g.input.enabled = false;
         if (document.pointerLockElement) document.exitPointerLock();
       }
@@ -106,7 +106,7 @@ class Game implements GameContext {
         if (g.engine.state === 'paused') {
           g.engine.setState('playing');
           g.input.enabled = true;
-          g.input.clearAll();
+          g.input.releaseKeys();
           g.lockPointer();
         }
       }
@@ -316,6 +316,10 @@ class Game implements GameContext {
 
     this.progress.bindEvents();
     const ev = this.engine.events;
+    ev.on('stateChanged', ({ from, to }) => {
+      if (to === 'playing') this.ads.gameplay(true);
+      else if (from === 'playing') this.ads.gameplay(false);
+    });
     ev.on('missionCompleted', () => this.save());
     ev.on('levelUp', () => this.save());
   }

@@ -172,6 +172,8 @@ const BUILDING_FRAG_DECL = /* glsl */ `
 // Urban facades: concrete panels and dark reflective glass with sparse warm/cool window points, lit shopfronts at
 // street level and neon tubes / roof edges only on some towers. Computed per pixel from instance scale: no textures.
 const BUILDING_FRAG_COLOR = /* glsl */ `
+  float fwU = fwidth(vLocal.x + vLocal.z);
+  float aaF = smoothstep(0.1, 0.4, fwU);
   float seedH = hash11(vSeed);
   float style = floor(hash11(vSeed * 2.7) * 3.0);
   vec3 aN = abs(vNrm);
@@ -213,6 +215,8 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
       win = step(0.05, g.x) * step(0.05, g.y) * smoothstep(0.1, 0.14, fy) * (1.0 - smoothstep(0.86, 0.9, fy));
     }
     win *= step(2.4, v);
+    // Distance anti-aliasing: far windows converge to their average coverage instead of shimmering.
+    win = mix(win, 0.4 * step(2.4, v), aaF);
     float recess = 0.6 + 0.8 * smoothstep(0.15, 0.85, fy);
     baseCol = mix(baseCol, vec3(0.008, 0.013, 0.022) * recess, win);
     winMask = win;
@@ -221,14 +225,14 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
     float lit = step(0.91, room) * step(5.0, v);
     float ct = hash21(vec2(floor(u / 2.7), fidx) + 9.1 + vSeed);
     vec3 lc = ct < 0.55 ? vec3(1.0, 0.72, 0.42) : (ct < 0.88 ? vec3(0.55, 0.78, 1.0) : pickColor(hash21(vec2(fidx, 3.3) + vSeed)));
-    float flick = 1.0 - 0.85 * step(0.95, hash21(vec2(floor(u / 2.7), fidx) + 3.0)) * step(0.0, sin(uTime * (5.0 + room * 6.0) + room * 40.0));
+    float flick = 1.0;
     float litRoom = step(0.58, room) * step(5.0, v);
     // Continuous vertical LED strips, with a slow pulse travelling up the facade.
     float spacing = 4.5 + 5.0 * hash11(vSeed * 6.1);
     float su = abs(fract((u + seedH * 3.0) / spacing) - 0.5) * spacing;
     float strip = (1.0 - smoothstep(0.045, 0.1, su)) * ledOn * step(2.5, v);
     float pulse = 0.65 + 0.35 * sin(v * 0.33 - uTime * 1.8 + vSeed);
-    nEmis += ledCol * strip * pulse * 1.8;
+    nEmis += ledCol * strip * pulse * 1.8 * (1.0 - aaF);
     baseCol = mix(baseCol, vec3(0.01), strip * 0.6);
     // Full-height corner light on a few towers.
     nEmis += ledCol * edgeOn * (1.0 - smoothstep(0.03, 0.07, eU)) * 2.1;
@@ -263,10 +267,16 @@ const BUILDING_FRAG_COLOR = /* glsl */ `
         // Glass reflects the sky: stronger at grazing angles and by day.
         float fres = 0.05 + 0.3 * pow(1.0 - clamp(rd.z, 0.0, 1.0), 4.0);
         vec3 sky = mix(vec3(0.45, 0.6, 0.9), vec3(0.85, 0.92, 1.0), clamp(vd.y * 2.0, 0.0, 1.0));
-        inside = mix(inside, sky * 0.9, fres * (0.15 + 0.85 * uDay));
-        nEmis += inside * win * 0.95 * mix(1.0, flick, litRoom);
+        inside = mix(inside, sky * 0.55, fres * (0.1 + 0.6 * uDay));
+        // At grazing angles the ray-cast stretches into streaks: blend to plain tinted glass instead.
+        vec3 glassTint = mix(vec3(0.02, 0.03, 0.05), vec3(0.2, 0.26, 0.34), uDay);
+        inside = mix(glassTint, inside, smoothstep(0.08, 0.38, rd.z));
+        // Fade the fine room detail out with distance so it never shimmers.
+        vec3 avgRoom = mix(vec3(0.03), lc * 0.5, litRoom) * (1.0 - uDay) + vec3(0.2, 0.22, 0.25) * uDay;
+        inside = mix(inside, avgRoom, smoothstep(uIntRange * 0.45, uIntRange * 0.95, dist));
+        nEmis += inside * win * 0.95;
       } else {
-        nEmis += lc * win * litRoom * flick * 0.55;
+        nEmis += mix(lc * litRoom, lc * 0.4, aaF) * win * 0.5 * (1.0 - uDay) + vec3(0.2, 0.22, 0.25) * win * uDay * 0.5;
       }
     }
   } else if (vNrm.y > 0.5) {
@@ -332,10 +342,6 @@ const FLOOR_FRAG_EMIT = /* glsl */ `
   fe += vec3(0.8, 0.85, 1.0) * (el * 0.55 + (zebraX + zebraZ) * 0.5);
   float curb = (step(abs(dx - 4.0), 0.07) * step(7.0, dz) + step(abs(dz - 4.0), 0.07) * step(7.0, dx));
   fe += uC1 * curb * 1.6;
-  vec2 g2 = abs(fract(vWXZ / 2.0) - 0.5);
-  fe += vec3(0.5, 0.55, 0.65) * inWalk * step(0.485, max(g2.x, g2.y)) * 0.025;
-  vec2 g4 = abs(fract(vWXZ / 4.0) - 0.5);
-  fe += vec3(0.4, 0.45, 0.55) * inLot * step(0.49, max(g4.x, g4.y)) * 0.015;
   totalEmissiveRadiance += fe * (1.0 - 0.8 * uDay);
 `;
 
@@ -374,7 +380,7 @@ const BILL_FRAG = /* glsl */ `
     float t = uTime;
     float row = floor(uv.y * 28.0);
     float glitch = step(0.985, hash21(vec2(row, floor(t * 6.0) + vSeed)));
-    uv.x += glitch * 0.08 * (hash21(vec2(row, vSeed)) - 0.5);
+    uv.x += glitch * 0.015 * (hash21(vec2(row, vSeed)) - 0.5);
     vec3 col = vec3(0.0);
     vec2 e = min(uv, 1.0 - uv);
     float frame = 1.0 - smoothstep(0.0, 0.025, min(e.x, e.y));

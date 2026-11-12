@@ -1,13 +1,14 @@
 import type { GameContext } from '../context';
+import { detectSdk, loadSdk, sdkGameplay, sdkLoadingFinished, type SdkKind } from './sdk';
 
 /**
  * Rewarded-ad ("watch-to-earn") architecture.
  *
  *   AdService ── request(placement) ──► AdProvider.show(...)  ──►  onAdStarted / onAdCompleted / onAdFailed
  *
- * Gameplay code only talks to `AdService`. To go live with a real network, add its <script> to index.html and
- * the matching provider below is picked automatically (see `pickProvider`). Until then the built-in
- * `BroadcastProvider` plays a 30 s corporate-broadcast style placeholder so the whole reward loop is testable.
+ * Gameplay code only talks to `AdService`. The platform SDK (CrazyGames / Poki / AdSense H5) is detected, loaded and
+ * initialised automatically by `sdk.ts`; its native callbacks are mapped onto the hooks below. Only when no platform
+ * is detected (local dev) the built-in `BroadcastProvider` plays a 30 s corporate-broadcast placeholder.
  * Never grant a reward from anywhere except the `completed` hook.
  */
 
@@ -209,6 +210,13 @@ export class BroadcastProvider implements AdProvider {
 
 // ───────────────────────────── service ─────────────────────────────
 
+/** Used while a platform SDK is still loading, or when it failed (ad blocker): never grants rewards. */
+class UnavailableProvider implements AdProvider {
+  readonly name = 'unavailable';
+  isAvailable(): boolean { return false; }
+  show(_p: AdPlacement, cb: ProviderCallbacks): void { cb.failed('unavailable'); }
+}
+
 export class AdService {
   /** Global hooks (analytics, mute music, pause SDK gameplay tracking, ...). */
   onAdStarted: (placement: AdPlacement) => void = () => undefined;
@@ -221,25 +229,35 @@ export class AdService {
   private uses = new Map<AdPlacement, number>();
   private lastEnd = new Map<AdPlacement, number>();
 
+  /** Which platform SDK is in use ('none' = local simulator). */
+  readonly sdk: SdkKind = detectSdk();
+  /** Resolves once the SDK (if any) finished initialising. */
+  readonly ready: Promise<void>;
+
   constructor(private ctx: GameContext, root: HTMLElement) {
-    this.provider = this.pickProvider(root);
+    const qs = new URLSearchParams(location.search);
+    // `?adseconds=N` shortens the local simulator, but only together with ?debug (QA builds).
+    const secs = qs.has('debug') ? Math.max(1, Number(qs.get('adseconds')) || AD_SECONDS) : AD_SECONDS;
+    if (this.sdk === 'none') {
+      this.provider = new BroadcastProvider(root, secs);
+      this.ready = Promise.resolve();
+    } else {
+      this.provider = new UnavailableProvider();
+      this.ready = loadSdk(this.sdk).then((ok) => {
+        if (!ok) return;
+        this.provider = this.sdk === 'crazygames' ? new CrazyGamesProvider() : this.sdk === 'poki' ? new PokiProvider() : new AdSenseH5Provider();
+        sdkLoadingFinished(this.sdk);
+      });
+    }
   }
+
+  /** Platform gameplay signal (CrazyGames / Poki use it to schedule ads and analytics). */
+  gameplay(playing: boolean): void { sdkGameplay(this.sdk, playing); }
 
   get providerName(): string { return this.provider.name; }
   get isBusy(): boolean { return this.busy; }
 
   setProvider(p: AdProvider): void { this.provider = p; }
-
-  private pickProvider(root: HTMLElement): AdProvider {
-    const forced = new URLSearchParams(location.search).get('adprovider');
-    const candidates: AdProvider[] = [new CrazyGamesProvider(), new PokiProvider(), new AdSenseH5Provider()];
-    const real = forced ? candidates.find((c) => c.name.toLowerCase().startsWith(forced.toLowerCase())) : candidates.find((c) => c.isAvailable());
-    if (real?.isAvailable()) return real;
-    // `?adseconds=N` shortens the placeholder broadcast, but only together with ?debug (QA builds).
-    const qs = new URLSearchParams(location.search);
-    const secs = qs.has('debug') ? Math.max(1, Number(qs.get('adseconds')) || AD_SECONDS) : AD_SECONDS;
-    return new BroadcastProvider(root, secs);
-  }
 
   /** Remaining uses this session / seconds until the next one. */
   status(p: AdPlacement): { ok: boolean; left: number; wait: number } {

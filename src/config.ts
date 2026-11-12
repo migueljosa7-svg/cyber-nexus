@@ -17,6 +17,7 @@ export const CITY = {
   LOT_INSET: 8.5,
 } as const;
 
+/** World density settings. The renderer overwrites the density fields from the detected hardware tier (see TIER_PROFILES). */
 export const CFG = {
   viewRadius: IS_TOUCH ? 1 : 2,
   maxPixelRatio: IS_TOUCH ? 1.25 : 1.5,
@@ -27,7 +28,16 @@ export const CFG = {
   npcCount: IS_TOUCH ? 22 : 44,
   gravity: 34,
   playerRadius: 0.55,
-} as const;
+};
+
+export type DensityProfile = Pick<typeof CFG, 'viewRadius' | 'rainCount' | 'particleCap' | 'groundCars' | 'flyers' | 'npcCount'>;
+
+/** Geometry / traffic density per hardware tier (index = tier: 0 low, 1 medium, 2 high). */
+export const TIER_PROFILES: DensityProfile[] = [
+  { viewRadius: 1, rainCount: 600, particleCap: 900, groundCars: 30, flyers: 20, npcCount: 22 },
+  { viewRadius: 2, rainCount: 1000, particleCap: 1400, groundCars: 44, flyers: 28, npcCount: 34 },
+  { viewRadius: 2, rainCount: 1700, particleCap: 2400, groundCars: 70, flyers: 44, npcCount: 54 },
+];
 
 export interface Palette {
   name: string;

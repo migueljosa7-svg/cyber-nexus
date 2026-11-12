@@ -27,6 +27,10 @@ export class Shop {
     if (e.code === 'Escape' || e.code === 'KeyB') { e.preventDefault(); this.close(); }
   };
   private timer = 0;
+  private open_ = false;
+  private lastBought = '';
+  private banner = '';
+  private pendingFx: GearId[] = [];
 
   constructor(private ctx: GameContext, root: HTMLElement) {
     this.el = document.createElement('div');
@@ -38,14 +42,17 @@ export class Shop {
     });
   }
 
-  get isOpen(): boolean { return !this.el.classList.contains('hidden'); }
+  get isOpen(): boolean { return this.open_; }
 
   open(): void {
     if (this.isOpen || this.ctx.player.dead) return;
-    this.el.classList.remove('hidden');
+    this.open_ = true;
+    this.lastBought = '';
+    this.banner = '';
+    this.el.classList.remove('hidden', 'out');
     this.ctx.modal.open();
     window.addEventListener('keydown', this.onKey, true);
-    this.render();
+    this.render(true);
     // Cooldown labels on the ad offers tick.
     this.timer = window.setInterval(() => {
       const a = this.ctx.ads;
@@ -55,11 +62,21 @@ export class Shop {
 
   close(): void {
     if (!this.isOpen) return;
-    this.el.classList.add('hidden');
-    this.el.innerHTML = '';
+    this.open_ = false;
     window.clearInterval(this.timer);
+    window.clearTimeout(this.bannerTimer);
     window.removeEventListener('keydown', this.onKey, true);
+    this.el.classList.add('out');
+    window.setTimeout(() => {
+      if (this.open_) return;
+      this.el.classList.add('hidden');
+      this.el.classList.remove('out');
+      this.el.innerHTML = '';
+    }, 170);
     this.ctx.modal.close();
+    // Show the new gear on the runner once the world is running again.
+    const fx = this.pendingFx.splice(0);
+    if (fx.length) window.setTimeout(() => this.ctx.player.equipFx(fx[fx.length - 1]), 120);
   }
 
   // ───────────────────────────── purchase logic ─────────────────────────────
@@ -80,6 +97,9 @@ export class Shop {
     const pl = this.ctx.player;
     const maxBefore = (id === 'armor' ? 18 : 0);
     pl.applyGear();
+    this.pendingFx.push(id);
+    this.lastBought = id;
+    this.showBanner(`${GEAR_INFO[id].label} — TIER ${p.gear[id]} EQUIPPED`);
     if (id === 'armor') pl.heal(maxBefore);
     if (id === 'core') pl.energy = Math.min(pl.maxEnergy, pl.energy + 12);
     this.ctx.progress.checkAchievements();
@@ -100,7 +120,7 @@ export class Shop {
     const { ui, audio, player } = this.ctx;
     let err: string | null = null;
     if (a === 'gear') err = this.buyGear(id as GearId, cur as 'credits' | 'sp');
-    else if (a === 'item') err = this.buyItem(id as ItemId);
+    else if (a === 'item') { err = this.buyItem(id as ItemId); if (!err) { this.lastBought = id; this.showBanner(`${ITEM_INFO[id as ItemId].label} ADDED`); } }
     else if (a === 'use') {
       const msg = player.useItem(id as ItemId);
       if (msg) ui.toast(msg, 'ok'); else err = 'CANNOT USE RIGHT NOW';
@@ -125,6 +145,16 @@ export class Shop {
     if (this.isOpen) this.render();
   }
 
+  private bannerTimer = 0;
+  private showBanner(text: string): void {
+    this.banner = text;
+    window.clearTimeout(this.bannerTimer);
+    this.bannerTimer = window.setTimeout(() => {
+      this.banner = '';
+      this.el.querySelector('.sh-banner')?.classList.remove('on');
+    }, 2200);
+  }
+
   /** Credit payout of the "rescue funds" ad. */
   rescueAmount(): number {
     return 300 + this.ctx.player.profile.level * 60;
@@ -132,7 +162,7 @@ export class Shop {
 
   // ───────────────────────────── view ─────────────────────────────
 
-  private render(): void {
+  private render(first = false): void {
     if (!this.isOpen) return;
     const { player, ads } = this.ctx;
     const p = player.profile;
@@ -144,7 +174,7 @@ export class Shop {
       const pips = Array.from({ length: MAX_GEAR }, (_, i) => `<i class="${i < lv ? 'on' : ''}"></i>`).join('');
       const cost = GEAR_CREDITS[lv];
       const sp = GEAR_SP[lv];
-      return `<div class="sh-card">
+      return `<div class="sh-card${this.lastBought === id ? ' bought' : ''}">
         <div class="sh-ico">${info.icon}</div>
         <div class="sh-body">
           <b>${info.label}</b><div class="sh-pips">${pips}</div>
@@ -160,7 +190,7 @@ export class Shop {
     }).join('');
     const items = (Object.keys(ITEM_INFO) as ItemId[]).map((id) => {
       const it = ITEM_INFO[id];
-      return `<div class="sh-card item">
+      return `<div class="sh-card item${this.lastBought === id ? ' bought' : ''}">
         <div class="sh-ico">${it.icon}</div>
         <div class="sh-body"><b>${it.label} <span class="sh-own">×${p.items[id]}</span></b><small>${it.desc}</small><small>HOTKEY [${it.key}]</small></div>
         <div class="sh-buy">
@@ -174,7 +204,8 @@ export class Shop {
     const adBtn = (s: { ok: boolean; left: number; wait: number }, id: string, label: string): string =>
       `<button class="btn sh-btn ad" data-a="ad" data-id="${id}" type="button" ${s.ok ? '' : 'disabled'}>${s.wait > 0 ? `${s.wait}s` : s.left <= 0 ? 'LIMIT' : `▶ ${label}`}</button>`;
     this.el.innerHTML = `
-      <div class="sh-panel">
+      <div class="sh-panel${first ? ' intro' : ''}" role="dialog" aria-label="Black Market">
+        <div class="sh-banner${this.banner ? ' on' : ''}">${this.banner}</div>
         <div class="sh-head">
           <h2>BLACK MARKET</h2>
           <div class="sh-wallet"><span>¢ <b>${p.credits.toLocaleString()}</b></span><span>SP <b>${p.skillPoints}</b></span></div>

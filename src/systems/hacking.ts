@@ -41,7 +41,7 @@ export class HackingSystem {
     if (this.open_ || this.ctx.player.dead) return;
     const { engine, input, ui } = this.ctx;
     this.open_ = true;
-    input.clearAll();
+    input.releaseKeys();
     input.enabled = false;
     if (document.pointerLockElement) document.exitPointerLock();
     engine.setState('hacking');
@@ -60,7 +60,7 @@ export class HackingSystem {
     ui.console.close();
     ui.setScanMarkers([]);
     input.enabled = true;
-    input.clearAll();
+    input.releaseKeys();
     if (engine.state === 'hacking') engine.setState('playing');
   }
 

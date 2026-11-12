@@ -146,6 +146,13 @@ export class Input {
     this.pitchDelta = 0;
   }
 
+  /** Forgets every physically-held key. Used when focus moves to a DOM panel, whose key-ups the game never sees. */
+  releaseKeys(): void {
+    this.keys.clear();
+    this.held.clear();
+    this.pressed.clear();
+  }
+
   /** Drops queued/held actions (keys physically held stay registered so movement resumes smoothly). */
   clearAll(): void {
     this.pressed.clear();

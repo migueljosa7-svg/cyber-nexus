@@ -117,6 +117,7 @@ export class Player {
   private cape!: Cape;
   private lastFacing = 0;
   private gearLight = 0;
+  private equipFlash = 0;
   private bladeBase = 1;
   private trailHex = 0x66f6ff;
   private shieldMesh: THREE.Mesh;
@@ -283,6 +284,16 @@ export class Player {
     this.bladeBase = 1 + 0.12 * g.laser;
     this.shieldMesh.scale.setScalar(1 + 0.06 * g.shield);
     this.shieldMat.color.setRGB(0.1 + 0.2 * g.shield, 1.2, 2.2 - 0.2 * g.shield);
+  }
+
+  /** Visual confirmation after buying gear: energy ring, particles and a brief glow on the runner. */
+  equipFx(id: GearId): void {
+    const col = id === 'laser' ? this.trailHex : id === 'shield' ? 0x33ffcc : id === 'core' ? 0xb6ff00 : 0xff2bd6;
+    const c = this.tmp.set(this.pos.x, 1.0, this.pos.z);
+    this.ctx.fx.burst(c, { color: col, color2: 0xffffff, count: 90, speed: 9, life: 1.0, size: 0.34, gravity: -2 });
+    this.ctx.combat.ringFx(this.tmp2.set(this.pos.x, 0.2, this.pos.z), col, 3.4, 0.7);
+    this.ctx.audio.success();
+    this.equipFlash = 1;
   }
 
   /** Bolt colour variant for the current laser tier. */
@@ -530,7 +541,8 @@ export class Player {
       this.facing = this.lerpAngle(this.facing, Math.atan2(wish.x, wish.z), Math.min(1, dt * 14));
     }
 
-    this.light.intensity = 12 + this.gearLight + Math.sin(this.animT * 4) * 2 + (this.dashing > 0 ? 16 : 0) + (this.adrenaline > 0 ? 6 : 0);
+    this.light.intensity = 12 + this.gearLight + Math.sin(this.animT * 4) * 2 + (this.dashing > 0 ? 16 : 0) + (this.adrenaline > 0 ? 6 : 0) + this.equipFlash * 30;
+    this.equipFlash = Math.max(0, this.equipFlash - dt * 1.4);
     this.animate(dt, wishLen);
   }
 

@@ -4,7 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { CFG, IS_TOUCH, type Palette } from '../config';
+import { CFG, IS_TOUCH, TIER_PROFILES, type Palette } from '../config';
 
 /** Cinematic grade: chromatic aberration, film grain, scanlines, vignette, glitch bands and damage tint. */
 const POST_SHADER = {
@@ -13,8 +13,8 @@ const POST_SHADER = {
     uTime: { value: 0 },
     uGlitch: { value: 0 },
     uHurt: { value: 0 },
-    uAberration: { value: 0.0012 },
-    uGrain: { value: 0.032 },
+    uAberration: { value: 0.0004 },
+    uGrain: { value: 0.01 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -44,11 +44,11 @@ const POST_SHADER = {
       col.r = texture2D(tDiffuse, uv + dir * ab).r;
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - dir * ab).b;
-      col *= 0.97 + 0.03 * sin(uv.y * 900.0 + uTime * 6.0);
       float vig = smoothstep(0.95, 0.25, length(dir) * 1.25);
-      col *= mix(0.5, 1.0, vig);
+      col *= mix(0.68, 1.0, vig);
       col += vec3(1.0, 0.05, 0.1) * uHurt * (1.0 - vig) * 1.4;
-      float n = hash2(gl_FragCoord.xy + fract(uTime) * 311.0) - 0.5;
+      // Fine film grain, refreshed at 12 Hz so it reads as filmic texture, never as flicker.
+      float n = hash2(gl_FragCoord.xy + floor(uTime * 12.0) * 37.0) - 0.5;
       col += n * uGrain * (1.0 - clamp(dot(col, vec3(0.33)), 0.0, 1.0) * 0.6);
       gl_FragColor = vec4(col, 1.0);
     }
@@ -89,6 +89,7 @@ export class GfxRenderer {
   private tier: Tier;
   private baseBloom: number;
   private shadowsSupported: boolean;
+  private strongGpu = false;
   private rim: THREE.DirectionalLight | null = null;
   private palette: Palette | null = null;
   private starMat!: THREE.PointsMaterial;
@@ -109,10 +110,14 @@ export class GfxRenderer {
     this.gpuName = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'unknown';
     // Quality preset: ?q=low|medium|high, or the menu setting; otherwise guessed from the GPU name.
     const q = new URLSearchParams(location.search).get('q') ?? readQualitySetting();
-    const discrete = /nvidia|geforce|rtx|gtx|quadro|radeon (rx|pro|vii)|apple (m\d|gpu)/i.test(this.gpuName);
+    const integrated = /intel.*(uhd|iris|hd graphics|xe)|radeon\(tm\) graphics|radeon graphics|vega \d|swiftshader|llvmpipe|microsoft basic/i.test(this.gpuName);
+    const discrete = !integrated && /nvidia|geforce|rtx|gtx|quadro|radeon (rx|pro|vii)|intel.*arc|apple (m\d|gpu)/i.test(this.gpuName);
+    // Strong GPUs (RTX, RX 5000+, Apple M-series) get 4x MSAA and native resolution; other discrete GPUs 2x.
+    this.strongGpu = /rtx|radeon rx ?[5-9]\d{3}|radeon pro|apple m\d/i.test(this.gpuName);
     const auto = IS_TOUCH ? Tier.Low : discrete ? Tier.High : Tier.Medium;
     this.tier = q === 'low' ? Tier.Low : q === 'medium' ? Tier.Medium : q === 'high' ? Tier.High : auto;
     this.shadowsSupported = this.tier !== Tier.Low;
+    Object.assign(CFG, TIER_PROFILES[this.tier]);
     this.maxPixelRatio = this.computeMaxRatio();
     this.pixelRatio = this.maxPixelRatio;
     this.renderer.setPixelRatio(this.pixelRatio);
@@ -194,14 +199,14 @@ export class GfxRenderer {
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
 
     // MSAA on a half-float HDR target is expensive: only worth it on discrete GPUs.
-    const samples = this.tier === Tier.High ? 2 : 0;
+    const samples = this.tier === Tier.High ? (this.strongGpu ? 4 : 2) : 0;
     const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.setPixelRatio(this.pixelRatio);
     this.composer.setSize(window.innerWidth, window.innerHeight);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.baseBloom = this.tier === Tier.Low ? 0.42 : 0.55;
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.baseBloom, 0.45, 1.25);
+    this.baseBloom = this.tier === Tier.Low ? 0.26 : 0.34;
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.baseBloom, 0.3, 1.35);
     this.composer.addPass(this.bloom);
     this.post = new ShaderPass(POST_SHADER);
     this.composer.addPass(this.post);
@@ -228,8 +233,8 @@ export class GfxRenderer {
 
   /** Largest render scale allowed for the current tier: device ratio, tier cap and a total-pixel budget. */
   private computeMaxRatio(): number {
-    const budget = this.tier === Tier.High ? 3.6e6 : this.tier === Tier.Medium ? 2.1e6 : 1.3e6;
-    const cap = this.tier === Tier.High ? CFG.maxPixelRatio : 1.25;
+    const budget = this.tier === Tier.High ? (this.strongGpu ? 9e6 : 4.5e6) : this.tier === Tier.Medium ? 1.9e6 : 1.2e6;
+    const cap = this.tier === Tier.High ? 2 : 1.25;
     const fit = Math.sqrt(budget / Math.max(1, window.innerWidth * window.innerHeight));
     return Math.max(0.55, Math.min(window.devicePixelRatio || 1, cap, fit));
   }
@@ -261,7 +266,7 @@ export class GfxRenderer {
 
   /** Window interior ray-cast range in metres per quality tier. */
   get interiorRange(): number {
-    return this.tier === Tier.High ? 100 : this.tier === Tier.Medium ? 70 : 42;
+    return this.tier === Tier.High ? 120 : this.tier === Tier.Medium ? 65 : 40;
   }
 
   /** Night-city palette + procedural neon environment map (real reflections on metal and glass). */
@@ -426,7 +431,8 @@ export class GfxRenderer {
     this.hurt = Math.max(0, this.hurt - dt * 2.4);
     const u = this.post.uniforms;
     u.uTime.value = time;
-    u.uGlitch.value = this.glitch;
+    // Glitch is hit feedback only: capped so it can never look like a rendering fault.
+    u.uGlitch.value = Math.min(this.glitch, 0.3);
     u.uHurt.value = this.hurt;
     this.sky.position.copy(this.camera.position);
     this.stars.position.copy(this.camera.position);
