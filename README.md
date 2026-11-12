@@ -78,7 +78,15 @@ src/systems/meta.ts       datos de cuenta (racha, logros) separados del guardado
 src/combat.ts, src/enemies.ts, src/particles.ts, src/audio.ts, src/input.ts, src/transitions.ts
 ```
 
-## Rendimiento
+## Rendimiento y calidad gráfica
+
+- Calidad por GPU: MSAA solo en GPUs dedicadas, presupuesto de píxeles por nivel (el render se escala para no pasar de ~1,3 / 2,1 / 3,6 Mpx), bloom a baja resolución y adaptación automática en ~1,5 s si baja de 50 FPS. Selector **GRAPHICS** en el menú (AUTO/LOW/MEDIUM/HIGH) o `?q=low|medium|high`.
+- Las fuentes de Google se cargan sin bloquear el primer render. `?debug` muestra FPS y `window.__boot` los tiempos de cada fase de carga.
+- **Ciclo día/noche** (7 min): cielo, niebla, sol/luna con sombras, reflejos, neones, farolas y carteles. El reloj aparece junto al distrito.
+- **Interiores reales en ventanas** (interior mapping en el shader de fachadas, sin geometría extra): habitaciones con muebles, personas, persianas, luz cálida/TV por la noche y luz solar de día; alcance 42/70/100 m según calidad.
+- **Personaje** (`src/player/humanoid.ts`): malla continua con huesos (SkinnedMesh), sudadera, pantalones, botas, guantes y pelo; 5 niveles de armadura visibles y capa con simulación de tela (nivel 4+). Todo se genera en carga, sin descargar modelos.
+
+## Rendimiento (detalles)
 
 - ~110 draw calls y ~70-80k triángulos por frame con la ciudad entera: todo lo repetido es `InstancedMesh`.
 - Tráfico y lluvia se animan en GPU; los chunks solo reescriben buffers de instancias (sin picos al cruzar chunks).

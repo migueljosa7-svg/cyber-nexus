@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { buildHumanoid, type Cape, type HumanoidRig } from './humanoid';
 import { CFG } from '../config';
 import type { GameContext } from '../context';
 
@@ -71,22 +71,7 @@ const SHOT_CD = 0.17;
 
 const clamp = THREE.MathUtils.clamp;
 
-/** Bone-like hierarchy: hips > spine > chest > head/arms, hips > thigh > shin > foot. */
-interface Rig {
-  hips: THREE.Group;
-  spine: THREE.Group;
-  head: THREE.Group;
-  shoulderL: THREE.Group;
-  shoulderR: THREE.Group;
-  elbowL: THREE.Group;
-  elbowR: THREE.Group;
-  hipL: THREE.Group;
-  hipR: THREE.Group;
-  kneeL: THREE.Group;
-  kneeR: THREE.Group;
-  footL: THREE.Mesh;
-  footR: THREE.Mesh;
-}
+type Rig = HumanoidRig;
 
 /** Third-person runner: inertial movement, double jump, dash with trail, 3-hit energy-blade combo, kinetic shots, RPG stats. */
 export class Player {
@@ -128,7 +113,9 @@ export class Player {
   private armorMat = new THREE.MeshStandardMaterial({ color: 0x232c52, roughness: 0.25, metalness: 0.95, emissive: 0x002a44, emissiveIntensity: 0.8, envMapIntensity: 1.6 });
   private bladeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 2.6, 3.2) });
   private bladeGlow!: THREE.Mesh;
-  private armorTiers: THREE.Group[] = [];
+  private armorTiers: THREE.Object3D[] = [];
+  private cape!: Cape;
+  private lastFacing = 0;
   private gearLight = 0;
   private bladeBase = 1;
   private trailHex = 0x66f6ff;
@@ -277,6 +264,7 @@ export class Player {
   applyGear(): void {
     const g = this.profile.gear;
     this.armorTiers.forEach((t, i) => { t.visible = g.armor > i; });
+    this.cape.visible = g.armor >= 4;
     const led = 1 + 0.28 * g.core + 0.12 * g.armor;
     this.glowMat.color.setRGB(0.1 * led, 1.6 * led, 2.2 * led);
     this.glow2Mat.color.setRGB(2.2 * led, 0.2 * led, 1.7 * led);
@@ -306,176 +294,42 @@ export class Player {
   // ───────────────────────────── model ─────────────────────────────
 
   private buildModel(): void {
-    const dark = new THREE.MeshStandardMaterial({ color: 0x141826, roughness: 0.3, metalness: 0.9, envMapIntensity: 1.5 });
-    const armor = this.armorMat;
-    const cloth = new THREE.MeshStandardMaterial({ color: 0x0d1020, roughness: 0.7, metalness: 0.2 });
-    const glow = this.glowMat;
-    const glow2 = this.glow2Mat;
-    const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh => {
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(x, y, z);
-      m.castShadow = true;
-      return m;
-    };
-    const grp = (x = 0, y = 0, z = 0): THREE.Group => {
-      const g = new THREE.Group();
-      g.position.set(x, y, z);
-      return g;
-    };
-
-    // Hips / pelvis
-    const hips = grp(0, 0.95, 0);
-    hips.add(mesh(new THREE.BoxGeometry(0.36, 0.2, 0.24), cloth, 0, 0, 0));
-    hips.add(mesh(new THREE.BoxGeometry(0.4, 0.05, 0.26), glow2, 0, 0.1, 0));
-
-    // Spine / chest
-    const spine = grp(0, 0.1, 0);
-    spine.add(mesh(new THREE.CapsuleGeometry(0.13, 0.12, 4, 8).scale(1.25, 1, 0.85), cloth, 0, 0.12, 0));
-    spine.add(mesh(new THREE.BoxGeometry(0.46, 0.34, 0.28), armor, 0, 0.4, 0));
-    spine.add(mesh(new THREE.BoxGeometry(0.16, 0.16, 0.04), glow, 0, 0.42, 0.15));
-    spine.add(mesh(new THREE.BoxGeometry(0.5, 0.05, 0.3), glow, 0, 0.58, 0));
-    spine.add(mesh(new THREE.BoxGeometry(0.34, 0.5, 0.18), dark, 0, 0.4, -0.22));
-    const pauldron = new THREE.SphereGeometry(0.13, 12, 8).scale(1.3, 0.78, 1.15);
-    spine.add(mesh(pauldron, armor, 0.31, 0.56, 0));
-    spine.add(mesh(pauldron, armor, -0.31, 0.56, 0));
-    spine.add(mesh(new THREE.BoxGeometry(0.2, 0.025, 0.2), glow, 0.31, 0.62, 0));
-    spine.add(mesh(new THREE.BoxGeometry(0.2, 0.025, 0.2), glow, -0.31, 0.62, 0));
-    hips.add(spine);
-
-    // Armour tiers (bought in the shop): each one adds visible plating.
-    const tier = (parent: THREE.Group): THREE.Group => { const t = grp(); t.visible = false; parent.add(t); this.armorTiers.push(t); return t; };
-    const t1 = tier(spine); // reinforced pauldrons
-    for (const sx of [-1, 1]) {
-      t1.add(mesh(new THREE.BoxGeometry(0.2, 0.07, 0.26), dark, sx * 0.4, 0.62, 0));
-      t1.add(mesh(new THREE.BoxGeometry(0.2, 0.02, 0.22), glow, sx * 0.4, 0.66, 0));
-    }
-    const t2 = tier(spine); // chest plate + abdomen guard
-    t2.add(mesh(new THREE.BoxGeometry(0.5, 0.22, 0.08), dark, 0, 0.42, 0.17));
-    t2.add(mesh(new THREE.BoxGeometry(0.3, 0.03, 0.09), glow2, 0, 0.42, 0.2));
-    t2.add(mesh(new THREE.BoxGeometry(0.34, 0.14, 0.1), dark, 0, 0.12, 0.12));
-    const t3 = tier(spine); // shoulder spikes
-    for (const sx of [-1, 1]) {
-      t3.add(mesh(new THREE.ConeGeometry(0.05, 0.26, 6).translate(0, 0.13, 0), glow2, sx * 0.44, 0.64, 0));
-      t3.add(mesh(new THREE.ConeGeometry(0.035, 0.18, 6).rotateZ(-sx * Math.PI / 2).translate(sx * 0.09, 0, 0), dark, sx * 0.46, 0.58, 0.1));
-    }
-    const t4 = tier(spine); // back-mounted reactor wings
-    for (const sx of [-1, 1]) {
-      const wing = mesh(new THREE.BoxGeometry(0.04, 0.5, 0.18), dark, sx * 0.2, 0.46, -0.34);
-      wing.rotation.z = sx * -0.35;
-      t4.add(wing);
-      const strip = mesh(new THREE.BoxGeometry(0.02, 0.44, 0.04), glow, sx * 0.2, 0.46, -0.44);
-      strip.rotation.z = sx * -0.35;
-      t4.add(strip);
-    }
-    const t5 = tier(spine); // halo crown ring + horns
-    const ring = mesh(new THREE.TorusGeometry(0.26, 0.018, 6, 24).rotateX(Math.PI / 2), glow, 0, 0.98, 0);
-    ring.castShadow = false;
-    t5.add(ring);
-    for (const sx of [-1, 1]) t5.add(mesh(new THREE.BoxGeometry(0.05, 0.3, 0.05), glow2, sx * 0.26, 0.82, 0));
-
-    // Head with LED visor
-    const head = grp(0, 0.68, 0);
-    head.add(mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.1, 8), dark, 0, -0.03, 0));
-    head.add(mesh(new THREE.SphereGeometry(0.15, 16, 12).scale(1, 1.08, 1.02), dark, 0, 0.12, 0));
-    const visor = mesh(new THREE.BoxGeometry(0.25, 0.075, 0.05), this.visorMat, 0, 0.13, 0.138);
-    visor.castShadow = false;
-    head.add(visor);
-    head.add(mesh(new THREE.BoxGeometry(0.02, 0.18, 0.02), glow2, 0.15, 0.2, -0.02));
-    head.add(mesh(new THREE.BoxGeometry(0.28, 0.05, 0.3), armor, 0, 0.27, -0.01));
-    head.add(mesh(new THREE.BoxGeometry(0.16, 0.07, 0.1), dark, 0, 0.0, 0.1));
-    for (const sx of [-1, 1]) {
-      head.add(mesh(new THREE.BoxGeometry(0.03, 0.1, 0.14), dark, sx * 0.155, 0.12, 0));
-      head.add(mesh(new THREE.BoxGeometry(0.02, 0.07, 0.1), glow, sx * 0.175, 0.12, 0));
-    }
-    spine.add(head);
-
-    // Arms
-    const armGeoU = new THREE.CapsuleGeometry(0.05, 0.22, 3, 8).translate(0, -0.17, 0);
-    const armGeoL = new THREE.CapsuleGeometry(0.045, 0.2, 3, 8).translate(0, -0.15, 0);
-    const makeArm = (sx: number): { shoulder: THREE.Group; elbow: THREE.Group } => {
-      const shoulder = grp(sx * 0.3, 0.5, 0);
-      shoulder.add(mesh(armGeoU, armor));
-      const elbow = grp(0, -0.34, 0);
-      elbow.add(mesh(armGeoL, dark));
-      elbow.add(mesh(new THREE.SphereGeometry(0.055, 8, 6), glow, 0, -0.32, 0));
-      shoulder.add(elbow);
-      spine.add(shoulder);
-      return { shoulder, elbow };
-    };
-    const aL = makeArm(-1);
-    const aR = makeArm(1);
+    const std = (color: number, rough: number, metal = 0, extra: THREE.MeshStandardMaterialParameters = {}): THREE.MeshStandardMaterial =>
+      new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal, ...extra });
+    const h = buildHumanoid({
+      skin: std(0xc8977a, 0.55, 0, { emissive: 0x20100a, emissiveIntensity: 0.4 }),
+      hoodie: std(0x1c2540, 0.88, 0.02, { envMapIntensity: 0.6 }),
+      pants: std(0x11141f, 0.85, 0.02, { envMapIntensity: 0.5 }),
+      dark: std(0x0b0c12, 0.45, 0.35, { envMapIntensity: 1.1 }),
+      hair: std(0x0c0a10, 0.6, 0.1),
+      armor: this.armorMat,
+      glow: this.glowMat,
+      glow2: this.glow2Mat,
+      visor: this.visorMat,
+      cape: std(0x1a2150, 0.92, 0, { side: THREE.DoubleSide, emissive: 0x050a22, emissiveIntensity: 0.6 }),
+    });
+    this.rig = h.rig;
+    this.armorTiers = h.tiers;
+    this.cape = h.cape;
 
     // Energy blade held in the right hand.
     this.swordPivot.position.set(0, -0.32, 0.02);
-    const hilt = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.26, 8), dark, 0, 0, 0.08);
+    const dark = new THREE.MeshStandardMaterial({ color: 0x141826, roughness: 0.3, metalness: 0.9, envMapIntensity: 1.5 });
+    const mk = (geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      return m;
+    };
+    const hilt = mk(new THREE.CylinderGeometry(0.03, 0.03, 0.26, 8), dark, 0, 0, 0.08);
     hilt.rotation.x = Math.PI / 2;
-    this.blade = mesh(new THREE.BoxGeometry(0.06, 0.06, 1.6), this.bladeMat, 0, 0, 1.0);
-    this.blade.castShadow = false;
-    const bladeGlow = this.bladeGlow = mesh(new THREE.BoxGeometry(0.18, 0.18, 1.7), new THREE.MeshBasicMaterial({ color: new THREE.Color(0, 0.7, 1.2), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }), 0, 0, 1.0);
-    bladeGlow.castShadow = false;
-    this.swordPivot.add(hilt, this.blade, bladeGlow);
-    aR.elbow.add(this.swordPivot);
+    hilt.castShadow = true;
+    this.blade = mk(new THREE.BoxGeometry(0.06, 0.06, 1.6), this.bladeMat, 0, 0, 1.0);
+    this.bladeGlow = mk(new THREE.BoxGeometry(0.18, 0.18, 1.7), new THREE.MeshBasicMaterial({ color: new THREE.Color(0, 0.7, 1.2), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }), 0, 0, 1.0);
+    this.swordPivot.add(hilt, this.blade, this.bladeGlow);
+    h.rig.elbowR.add(this.swordPivot);
 
-    // Legs
-    const thighGeo = new THREE.CapsuleGeometry(0.075, 0.26, 3, 8).translate(0, -0.2, 0);
-    const shinGeo = new THREE.CapsuleGeometry(0.065, 0.28, 3, 8).translate(0, -0.2, 0);
-    const makeLeg = (sx: number): { hip: THREE.Group; knee: THREE.Group; foot: THREE.Mesh } => {
-      const hip = grp(sx * 0.12, -0.06, 0);
-      hip.add(mesh(thighGeo, cloth));
-      hip.add(mesh(new THREE.BoxGeometry(0.17, 0.12, 0.17), armor, 0, -0.16, 0));
-      const knee = grp(0, -0.42, 0);
-      knee.add(mesh(shinGeo, armor));
-      knee.add(mesh(new THREE.BoxGeometry(0.12, 0.03, 0.12), glow, 0, -0.1, 0.05));
-      const foot = mesh(new THREE.BoxGeometry(0.14, 0.09, 0.28), dark, 0, -0.43, 0.05);
-      knee.add(foot);
-      hip.add(knee);
-      hips.add(hip);
-      return { hip, knee, foot };
-    };
-    const lL = makeLeg(-1);
-    const lR = makeLeg(1);
-
-    this.rig = {
-      hips, spine, head, shoulderL: aL.shoulder, shoulderR: aR.shoulder, elbowL: aL.elbow, elbowR: aR.elbow,
-      hipL: lL.hip, hipR: lR.hip, kneeL: lL.knee, kneeR: lR.knee, footL: lL.foot, footR: lR.foot,
-    };
-    this.mergeStatic(hips);
-    this.model.add(hips);
+    this.model.add(h.body);
     this.group.add(this.model);
-  }
-
-  /**
-   * Bakes the static sub-meshes of every bone into one mesh per (bone, material). The rig keeps every joint
-   * (groups) for animation but draws ~16 meshes instead of ~45, which also halves the shadow-pass cost.
-   */
-  private mergeStatic(root: THREE.Object3D): void {
-    for (const child of [...root.children]) {
-      if (child === this.swordPivot) continue;
-      if (child.type === 'Group') this.mergeStatic(child);
-    }
-    const byMat = new Map<THREE.Material, THREE.Mesh[]>();
-    for (const child of root.children) {
-      if (child instanceof THREE.Mesh && !(child as THREE.Mesh & { keep?: boolean }).keep) {
-        const list = byMat.get(child.material as THREE.Material) ?? [];
-        list.push(child);
-        byMat.set(child.material as THREE.Material, list);
-      }
-    }
-    for (const [mat, list] of byMat) {
-      if (list.length < 2) continue;
-      const geos = list.map((m) => {
-        m.updateMatrix();
-        const g = m.geometry.clone();
-        g.applyMatrix4(m.matrix);
-        return g.index ? g.toNonIndexed() : g;
-      });
-      const merged = mergeGeometries(geos);
-      if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.castShadow = list[0].castShadow;
-      for (const m of list) root.remove(m);
-      root.add(mesh);
-    }
   }
 
   // ───────────────────────────── state ─────────────────────────────
@@ -832,6 +686,9 @@ export class Player {
     this.thruster.scale.y = 1 + run * 0.8;
     const flick = this.invuln > 0 && this.dashing <= 0 && Math.floor(this.animT * 30) % 2 === 0;
     this.model.visible = !flick;
+    const turn = Math.atan2(Math.sin(this.facing - this.lastFacing), Math.cos(this.facing - this.lastFacing)) / Math.max(dt, 1e-3);
+    this.lastFacing = this.facing;
+    this.cape.update(dt, this.animT, run, this.vel.y, turn);
     this.blade.scale.x = this.blade.scale.y = this.bladeBase;
     this.bladeGlow.scale.x = this.bladeGlow.scale.y = this.bladeBase;
     // Evolving sword trail: from the second laser tier the swing sheds blade-coloured sparks along its length.
