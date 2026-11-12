@@ -98,6 +98,8 @@ export class MissionManager {
   /** 0..1 camera detection meter (HUD). */
   detection = 0;
 
+  /** Payout of the contract that just finished (used by the watch-to-double offer). */
+  lastReward = { credits: 0, xp: 0 };
   private nextId = 1;
   private site: Site | null = null;
   private flags: Flags = this.freshFlags();
@@ -112,6 +114,7 @@ export class MissionManager {
   private neonMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 1.8, 2.2) });
   private lockedMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.8, 0.25, 0.3) });
   private openMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 2.6, 0.5) });
+  private termRingGeo = new THREE.TorusGeometry(1.5, 0.05, 6, 32);
   private padGeo = new THREE.RingGeometry(5.2, 5.6, 40);
   private padMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.4, 2.0), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
   private coneGeo = new THREE.ConeGeometry(7, 24, 16, 1, true).translate(0, -12, 0).rotateX(-Math.PI / 2);
@@ -321,6 +324,7 @@ export class MissionManager {
     const xp = Math.round(m.rewardXp * (bonusStealth ? 1.25 : 1));
     player.addCredits(credits);
     player.addXp(xp);
+    this.lastReward = { credits, xp };
     m.state = 'complete';
     state.missionsDone++;
     audio.success();
@@ -450,7 +454,7 @@ export class MissionManager {
       this.mkBox(g, this.fenceMat, 0, 0.6, 0, 1.8, 1.2, 1.8);
       const col = this.mkBox(g, this.flags.termHacked ? this.openMat : this.neonMat, 0, 2.6, 0, 0.9, 2.8, 0.9);
       col.name = 'core';
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.05, 6, 32), this.neonMat);
+      const ring = new THREE.Mesh(this.termRingGeo, this.neonMat);
       ring.rotation.x = Math.PI / 2;
       ring.position.y = 4.4;
       ring.name = 'ring';

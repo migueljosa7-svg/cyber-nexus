@@ -40,3 +40,5 @@ export interface Palette {
 export const PALETTE: Palette = { name: 'NEON-GRID', primary: 0x00f0ff, secondary: 0xff2bd6, accent: 0xb6ff00, fog: 0x05061a };
 
 export const SAVE_KEY = 'cybernexus_open_world_save_v1';
+
+export const META_KEY = 'cybernexus_open_world_meta_v1';

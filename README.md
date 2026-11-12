@@ -17,7 +17,7 @@ npm run preview    # sirve el build de producción
 1. Pulsa **NEW GAME**. Empiezas en una plaza con un contrato ya aceptado (registro de misión a la izquierda, marcador y minimapa).
 2. **F / Enter** abre la consola de hackeo (en móvil, botón **HACK** + chips táctiles). Escribe `/help`.
 3. `/scan` lista lo hackeable a 46 m: ciudadanos (`NPC-xx`), vehículos (`CAR-xx`, `FLY-xx`), quioscos (`TRM-xx`), puertas (`DOOR`), cámaras (`CAM`) y núcleos de misión.
-4. `/hack [id]`, `/override [id]`, `/interrogate [id]` (a ≤ 14 m) abren un minijuego de descifrado por tiempo (secuencia, bytes o nodos). Cuestan RAM, que se regenera.
+4. `/hack [id]`, `/override [id]`, `/interrogate [id]` (a ≤ 14 m) abren el minijuego **ICE BREAKER**: un tablero 4×3, un clic (o la tecla marcada en cada casilla) sobre cada nodo **CIAN ◆** y nunca sobre los **ROJOS ✕** (restan tiempo). Funciona igual con ratón, teclado y táctil. Cuestan RAM, que se regenera.
 5. `/missions` muestra el tablón; `/accept n` acepta un contrato. Tipos: **hackear terminal central**, **eliminar al líder rival**, **robar un maletín y escapar sin ser detectado**, **interrogar a un informante**. Se generan infinitos y escalan con tu nivel.
 6. Recompensas en créditos y XP; con los puntos de habilidad usa `/upgrade <hp|energy|ram|speed|damage>`.
 
@@ -30,7 +30,29 @@ npm run preview    # sirve el build de producción
 | Q: pulso EMP · E: escudo de datos · R: ráfaga cuántica | EMP · SHLD · QNTM |
 | F / Enter: consola de hackeo · P: pausa · F3: estadísticas | HACK |
 
-El progreso (nivel, créditos, mejoras) se guarda solo en `localStorage` (CONTINUE).
+El progreso (nivel, créditos, equipo) se guarda solo en `localStorage` (CONTINUE). La racha diaria y los logros viven en una clave aparte y **no** se borran con NEW GAME.
+
+## Sistemas de retención y monetización
+
+| Sistema | Dónde | Qué hace |
+| --- | --- | --- |
+| **Tienda** (`/shop`, tecla **B**, botón SHOP) | `src/systems/shop.ts` | Equipo en 5 niveles (hoja de plasma, escudo, núcleo de energía, blindaje) pagable con créditos **o** puntos de habilidad; consumibles (pack de RAM, kit de integridad, adrenalina, teclas **1-3**). |
+| **Cambios visibles en 3D** | `src/player/player.ts` (`applyGear`) | Cada nivel modifica el modelo: hombreras, placa pectoral, pinchos, alas de reactor y halo; LEDs más intensos; hoja más larga, de otro color y con estela de partículas evolutiva. |
+| **Racha diaria** (`/daily`) | `src/systems/daily.ts` | Panel holográfico de 7 días acumulativos (créditos, RAM, mejora de arma, escudo, suministros, jackpot). Se rompe si se salta un día natural. Opción de reclamar ×2 viendo un anuncio. |
+| **Anuncios incentivados** | `src/systems/ads.ts` | `AdService` + proveedores. Duplicar recompensa de misión (**G** / toque), recarga de RAM (`/ram`), créditos de rescate (tienda y pantalla de Game Over). |
+| **Combos** | `src/systems/progress.ts` | Cadena de golpes → multiplicador ×1.0–×3.0 sobre créditos y XP de bajas; recibir daño lo reduce a la mitad. |
+| **Eventos de calle** | `src/systems/progress.ts` | *Data Drops*: baliza dorada aleatoria cerca de ti (32 s) con créditos, RAM, energía o kits. |
+| **Logros** | `src/systems/progress.ts` (`/achievements`) | 16 trofeos con recompensa en créditos. |
+
+### Conectar un SDK real de anuncios
+
+El juego nunca concede una recompensa fuera del hook `onAdCompleted`. Hay un reproductor de relleno de 30 s ("transmisión corporativa") y adaptadores listos, detectados automáticamente por la presencia del SDK en `window`:
+
+- **CrazyGames**: añade `<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js">` a `index.html` (usa `CrazyGames.SDK.ad.requestAd('rewarded', …)`).
+- **Poki**: añade el script de `PokiSDK` (usa `PokiSDK.rewardedBreak()`).
+- **Google AdSense H5 Games**: añade `adsbygoogle.js` con `data-ad-client` y activa `adBreak` (formato `reward`).
+
+Hooks globales: `ctx.ads.onAdStarted / onAdCompleted / onAdFailed` (analítica, silenciar música…) y, por petición, `ads.request('ram_refill', { onAdCompleted, onAdFailed })`. Se puede forzar proveedor con `?adprovider=crazygames|poki|adsense`. Con `?debug&adseconds=3` el relleno dura 3 s para pruebas (en producción siempre 30 s). Límites de sesión y enfriamientos por colocación en `LIMITS`.
 
 ## Arquitectura
 
@@ -50,7 +72,9 @@ src/player/player.ts      rig humano articulado (visor LED), inercia, doble salt
 src/systems/missions.ts   generador procedural de misiones, sitios, cámaras con conos de detección, recompensas
 src/systems/hacking.ts    consola: /hack /scan /override /interrogate /missions /upgrade ... + minijuegos
 src/ui/hud.ts             HUD, minimapa circular, registro de misiones, marcadores 3D, consola CRT, controles táctiles
-src/ui/minigame.ts        minijuegos de descifrado
+src/ui/minigame.ts        ICE BREAKER (hackeo de un clic)
+src/systems/shop.ts       tienda · src/systems/ads.ts anuncios · src/systems/daily.ts racha · src/systems/progress.ts combos/eventos/logros
+src/systems/meta.ts       datos de cuenta (racha, logros) separados del guardado de partida
 src/combat.ts, src/enemies.ts, src/particles.ts, src/audio.ts, src/input.ts, src/transitions.ts
 ```
 

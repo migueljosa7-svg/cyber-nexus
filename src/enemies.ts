@@ -466,9 +466,10 @@ export class EnemyManager {
     ctx.hitStop(e.kind === 'brute' ? 0.12 : 0.05);
 
     state.kills++;
-    const credits = Math.round(spec.points * (e.leader ? 3 : 0.4));
+    const mult = ctx.progress.comboMult;
+    const credits = Math.round(spec.points * (e.leader ? 3 : 0.4) * mult);
     player.addCredits(credits);
-    player.addXp(Math.round(spec.points * 0.18 * (e.leader ? 3 : 1)));
+    player.addXp(Math.round(spec.points * 0.18 * (e.leader ? 3 : 1) * mult));
     player.energy = Math.min(player.maxEnergy, player.energy + 9);
     if (Math.random() < 0.2) player.heal(4);
 

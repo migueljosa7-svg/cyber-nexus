@@ -12,11 +12,15 @@ import { ParticleSystem } from './particles';
 import { City } from './world/city';
 import { Traffic } from './world/traffic';
 import { NpcManager } from './world/npcs';
-import { Player, type Profile } from './player/player';
+import { Player, defaultProfile, type Profile } from './player/player';
 import { Combat } from './combat';
 import { EnemyManager } from './enemies';
 import { MissionManager, type MissionMarker } from './systems/missions';
 import { HackingSystem } from './systems/hacking';
+import { Shop } from './systems/shop';
+import { AdService } from './systems/ads';
+import { DailyStreak } from './systems/daily';
+import { Progress } from './systems/progress';
 import { HUD } from './ui/hud';
 import { Transitions, bootLines, deathLines } from './transitions';
 
@@ -51,6 +55,10 @@ class Game implements GameContext {
   missions!: MissionManager;
   hacking!: HackingSystem;
   ui!: HUD;
+  shop!: Shop;
+  ads!: AdService;
+  daily!: DailyStreak;
+  progress!: Progress;
   tx!: Transitions;
   rig!: ChaseCamera;
   blobs!: ContactShadows;
@@ -69,6 +77,46 @@ class Game implements GameContext {
   private districtLabel = '';
   private saveT = 0;
   private starting = false;
+  private modalDepth = 0;
+  private modalPaused = false;
+  private rescueBtn: HTMLButtonElement | null = null;
+  private lastLost = 0;
+  private pendingRespawn = false;
+
+  /** Freezes the simulation while a DOM panel (shop, daily reward, ad) owns the screen. Calls nest. */
+  readonly modal: GameContext['modal'] = ((): GameContext['modal'] => {
+    const g = this;
+    return {
+    open: (): void => {
+      g.modalDepth++;
+      if (g.modalDepth === 1 && g.engine.state === 'playing') {
+        g.modalPaused = true;
+        g.engine.setState('paused');
+        g.input.clearAll();
+        g.input.enabled = false;
+        if (document.pointerLockElement) document.exitPointerLock();
+      }
+    },
+    close: (): void => {
+      g.modalDepth = Math.max(0, g.modalDepth - 1);
+      if (g.modalDepth === 0 && g.modalPaused) {
+        g.modalPaused = false;
+        if (g.engine.state === 'paused') {
+          g.engine.setState('playing');
+          g.input.enabled = true;
+          g.input.clearAll();
+          g.lockPointer();
+        }
+      }
+    },
+    get depth(): number { return g.modalDepth; },
+    };
+  })();
+
+  private lockPointer(): void {
+    if (this.input.isTouch) return;
+    try { void (this.canvas.requestPointerLock?.() as Promise<void> | undefined)?.catch?.(() => undefined); } catch { /* needs a user gesture */ }
+  }
 
   get camYaw(): number {
     return this.rig ? this.rig.yaw : 0;
@@ -122,6 +170,11 @@ class Game implements GameContext {
       this.enemies = new EnemyManager(this, this.scene);
       this.missions = new MissionManager(this, this.scene);
       this.hacking = new HackingSystem(this, this.uiRoot);
+      this.progress = new Progress(this, this.scene, this.uiRoot.querySelector('.hud') as HTMLElement);
+      this.ads = new AdService(this, this.uiRoot);
+      this.shop = new Shop(this, this.uiRoot);
+      this.daily = new DailyStreak(this, this.uiRoot);
+      this.buildRescueButton();
       this.tx = new Transitions(this.ui.root, this.audio, this.gfx);
       this.rig = new ChaseCamera(this.camera, this);
       this.blobs = new ContactShadows(this.scene);
@@ -191,6 +244,7 @@ class Game implements GameContext {
       },
     });
     e.addSystem({ name: 'missions', states: play, update: (dt) => this.missions.update(dt, e.clock) });
+    e.addSystem({ name: 'progress', states: ['playing'], update: (dt) => this.progress.update(dt) });
     e.addSystem({ name: 'hacking', states: ['playing'], update: (dt) => this.hacking.update(dt) });
     e.addSystem({
       name: 'world',
@@ -224,8 +278,9 @@ class Game implements GameContext {
       update: (_dt, rawDt) => {
         this.pushHud(rawDt);
         this.ui.updateOverlays(rawDt, this.camera);
+        this.progress.updateHud();
         this.ui.setMouseHint(e.state === 'playing' && !this.input.isTouch && !this.input.pointerLocked);
-        if (e.state === 'paused') {
+        if (e.state === 'paused' && this.modalDepth === 0) {
           this.input.poll();
           if (this.input.consume('pause')) this.setPaused(false);
         }
@@ -241,7 +296,7 @@ class Game implements GameContext {
   private bindEvents(): void {
     this.canvas.addEventListener('click', () => {
       if (this.input.isTouch) return;
-      if (this.engine.state === 'playing' && !this.input.pointerLocked) void this.canvas.requestPointerLock?.();
+      if (this.engine.state === 'playing' && !this.input.pointerLocked) this.lockPointer();
     });
     this.ui.root.querySelector('.pause')!.addEventListener('click', () => {
       if (this.engine.state === 'paused') this.setPaused(false);
@@ -250,12 +305,14 @@ class Game implements GameContext {
     window.addEventListener('blur', () => { if (this.engine.state === 'playing') this.setPaused(true); });
     window.addEventListener('keydown', (e) => { if (e.code === 'F3') { e.preventDefault(); this.toggleStats(); } });
 
+    this.progress.bindEvents();
     const ev = this.engine.events;
     ev.on('missionCompleted', () => this.save());
     ev.on('levelUp', () => this.save());
   }
 
   private setPaused(p: boolean): void {
+    if (this.modalDepth > 0) return;
     if (p && this.engine.state === 'playing') {
       this.engine.setState('paused');
       this.ui.setPaused(true);
@@ -264,7 +321,7 @@ class Game implements GameContext {
       this.engine.setState('playing');
       this.ui.setPaused(false);
       this.input.clearAll();
-      if (!this.input.isTouch) void this.canvas.requestPointerLock?.();
+      this.lockPointer();
     }
   }
 
@@ -297,6 +354,7 @@ class Game implements GameContext {
     ui.setMissionLog(missions.logData());
     this.markers.length = 0;
     missions.markers(this.markers);
+    this.progress.markers(this.markers);
     ui.setMarkers(this.markers);
     this.mapMarkers = this.markers;
     ui.setMinimap({ px: player.pos.x, pz: player.pos.z, camYaw: this.rig.yaw, facing: player.facing, markers: this.mapMarkers });
@@ -313,7 +371,7 @@ class Game implements GameContext {
     }
   }
 
-  private save(): void {
+  save(): void {
     if (!this.player || this.engine.state === 'menu' || this.engine.state === 'loading') return;
     const data: SaveData = { profile: this.player.serialize(), kills: this.state.kills, hacks: this.state.hacks, missionsDone: this.state.missionsDone };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch { /* storage unavailable */ }
@@ -335,7 +393,7 @@ class Game implements GameContext {
         const save = newGame ? null : this.loadSave();
         this.state = { time: 0, kills: save?.kills ?? 0, hacks: save?.hacks ?? 0, missionsDone: save?.missionsDone ?? 0, creditsEarned: 0 };
         if (save) this.player.load(save.profile);
-        else this.player.load({ level: 1, xp: 0, credits: 250, skillPoints: 0, up: { hp: 0, energy: 0, ram: 0, speed: 0, damage: 0 } });
+        else this.player.load(defaultProfile());
         this.resetWorld();
         this.missions.generateOffers();
         this.missions.accept(0);
@@ -343,7 +401,8 @@ class Game implements GameContext {
     });
     this.starting = false;
     this.beginPlaying();
-    this.ui.toast('ENTER / F opens the hack console — try /missions, /scan', 'info');
+    this.ui.toast('ENTER / F: hack console · B: shop · 1-3: items', 'info');
+    this.daily.checkOnStart();
   }
 
   private resetWorld(): void {
@@ -354,10 +413,44 @@ class Game implements GameContext {
     this.fx.clear();
     this.npcs.reset();
     this.missions.refreshSite();
+    this.progress.reset();
     this.dying = false;
     this.rig.yaw = 0;
     this.rig.pitch = 0.36;
     this.rig.update(1, true);
+  }
+
+  /** "Rescue funds" watch-to-earn button on the game over panel. */
+  private buildRescueButton(): void {
+    const panel = this.ui.root.querySelector('.over .panel') as HTMLElement;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.dataset.act = 'rescue';
+    btn.style.marginRight = '10px';
+    panel.insertBefore(btn, panel.querySelector('[data-act="respawn"]'));
+    this.rescueBtn = btn;
+    btn.addEventListener('click', () => {
+      const amount = this.lastLost + this.shop.rescueAmount();
+      btn.disabled = true;
+      void this.ads.request('rescue_credits', {
+        onAdCompleted: () => {
+          this.player.addCredits(amount);
+          this.save();
+          btn.textContent = `RESCUED +¢${amount}`;
+        },
+        onAdFailed: () => { btn.disabled = !this.ads.status('rescue_credits').ok; },
+      });
+    });
+  }
+
+  private refreshRescueButton(): void {
+    const btn = this.rescueBtn;
+    if (!btn) return;
+    const st = this.ads.status('rescue_credits');
+    btn.disabled = !st.ok;
+    btn.classList.toggle('hidden', st.left <= 0);
+    btn.textContent = `▶ WATCH AD · RECOVER +¢${this.lastLost + this.shop.rescueAmount()}`;
   }
 
   private beginPlaying(): void {
@@ -396,15 +489,20 @@ class Game implements GameContext {
       lines: deathLines(this.player.profile.credits),
       work: () => {
         this.player.profile.credits -= lost;
+        this.lastLost = lost;
+        this.refreshRescueButton();
         this.save();
         this.ui.showGameOver({ level: this.player.profile.level, kills: this.state.kills, hacks: this.state.hacks, missions: this.state.missionsDone, creditsLost: lost });
       },
     });
     this.engine.timeTarget = 1;
     this.engine.setState('gameover');
+    if (this.pendingRespawn) { this.pendingRespawn = false; void this.respawn(); }
   }
 
   private async respawn(): Promise<void> {
+    // The game-over panel is clickable while the "signal lost" transition is still finishing: queue the click.
+    if (this.engine.state !== 'gameover') { this.pendingRespawn = this.engine.state === 'loading'; return; }
     if (this.starting) return;
     this.starting = true;
     this.ui.hideGameOver();

@@ -5,13 +5,35 @@ import type { GameContext } from '../context';
 
 export type UpgradeId = 'hp' | 'energy' | 'ram' | 'speed' | 'damage';
 
+export type GearId = 'laser' | 'shield' | 'core' | 'armor';
+export type ItemId = 'ram' | 'kit' | 'adrenaline';
+export const MAX_GEAR = 5;
+
 export interface Profile {
   level: number;
   xp: number;
   credits: number;
   skillPoints: number;
   up: Record<UpgradeId, number>;
+  /** Purchased equipment tiers (0..5). They change the character's 3D model. */
+  gear: Record<GearId, number>;
+  /** Consumable stock. */
+  items: Record<ItemId, number>;
 }
+
+export function defaultProfile(): Profile {
+  return {
+    level: 1, xp: 0, credits: 250, skillPoints: 0,
+    up: { hp: 0, energy: 0, ram: 0, speed: 0, damage: 0 },
+    gear: { laser: 0, shield: 0, core: 0, armor: 0 },
+    items: { ram: 1, kit: 1, adrenaline: 0 },
+  };
+}
+
+/** Blade colour per laser tier (HDR so it blooms). */
+const BLADE_TINT: Array<[number, number, number]> = [
+  [0.2, 2.6, 3.2], [0.3, 3.0, 3.0], [0.4, 3.4, 1.4], [3.0, 0.8, 3.0], [3.6, 3.0, 1.0], [3.8, 3.4, 3.4],
+];
 
 export const UPGRADE_INFO: Record<UpgradeId, { label: string; desc: string }> = {
   hp: { label: 'CYBERNETIC HULL', desc: '+20 max integrity' },
@@ -86,7 +108,11 @@ export class Player {
   comboIdx = 0;
   comboWindow = 0;
   shotCd = 0;
-  readonly profile: Profile = { level: 1, xp: 0, credits: 250, skillPoints: 0, up: { hp: 0, energy: 0, ram: 0, speed: 0, damage: 0 } };
+  readonly profile: Profile = defaultProfile();
+  /** Seconds of adrenaline boost left. */
+  adrenaline = 0;
+  /** Current slash / trail colour (follows the laser tier). */
+  readonly trailColor = new THREE.Color(0.4, 2.6, 3.2);
 
   private jumps = 0;
   private hitDone = false;
@@ -97,6 +123,15 @@ export class Player {
   private swordPivot = new THREE.Group();
   private blade!: THREE.Mesh;
   private visorMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 1.6, 2.2) });
+  private glowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 1.6, 2.2) });
+  private glow2Mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.2, 1.7) });
+  private armorMat = new THREE.MeshStandardMaterial({ color: 0x232c52, roughness: 0.25, metalness: 0.95, emissive: 0x002a44, emissiveIntensity: 0.8, envMapIntensity: 1.6 });
+  private bladeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 2.6, 3.2) });
+  private bladeGlow!: THREE.Mesh;
+  private armorTiers: THREE.Group[] = [];
+  private gearLight = 0;
+  private bladeBase = 1;
+  private trailHex = 0x66f6ff;
   private shieldMesh: THREE.Mesh;
   private shieldMat: THREE.MeshBasicMaterial;
   private thruster: THREE.Mesh;
@@ -130,6 +165,7 @@ export class Player {
     this.light.position.y = 2.2;
     this.group.add(this.light);
     scene.add(this.group);
+    this.applyGear();
     this.hp = this.maxHp;
     this.energy = this.maxEnergy;
     this.ram = this.maxRam;
@@ -137,11 +173,16 @@ export class Player {
 
   // ───────────────────────────── stats & progression ─────────────────────────────
 
-  get maxHp(): number { return 100 + 20 * this.profile.up.hp; }
-  get maxEnergy(): number { return 100 + 15 * this.profile.up.energy; }
+  get maxHp(): number { return 100 + 20 * this.profile.up.hp + 18 * this.profile.gear.armor; }
+  get maxEnergy(): number { return 100 + 15 * this.profile.up.energy + 12 * this.profile.gear.core; }
+  get energyRegen(): number { return 7 + 1.4 * this.profile.gear.core; }
+  /** Incoming damage multiplier from armour plating. */
+  get armorFactor(): number { return 1 - 0.045 * this.profile.gear.armor; }
+  get shieldCap(): number { return 70 + 25 * this.profile.gear.shield; }
+  get shieldDuration(): number { return 8 + this.profile.gear.shield; }
   get maxRam(): number { return 100 + 20 * this.profile.up.ram; }
-  get speedMult(): number { return 1 + 0.05 * this.profile.up.speed; }
-  get damageMult(): number { return 1 + 0.1 * this.profile.up.damage; }
+  get speedMult(): number { return (1 + 0.05 * this.profile.up.speed) * (this.adrenaline > 0 ? 1.25 : 1); }
+  get damageMult(): number { return (1 + 0.1 * this.profile.up.damage) * (1 + 0.12 * this.profile.gear.laser) * (this.adrenaline > 0 ? 1.25 : 1); }
   get xpToNext(): number { return 100 + (this.profile.level - 1) * 70; }
 
   addXp(n: number): void {
@@ -196,22 +237,80 @@ export class Player {
     return JSON.parse(JSON.stringify(this.profile)) as Profile;
   }
 
-  load(p: Profile): void {
-    Object.assign(this.profile, p);
-    this.profile.up = { ...{ hp: 0, energy: 0, ram: 0, speed: 0, damage: 0 }, ...(p.up ?? {}) };
+  load(p: Partial<Profile>): void {
+    const d = defaultProfile();
+    Object.assign(this.profile, d, p);
+    this.profile.up = { ...d.up, ...(p.up ?? {}) };
+    this.profile.gear = { ...d.gear, ...(p.gear ?? {}) };
+    this.profile.items = { ...d.items, ...(p.items ?? {}) };
+    for (const k of Object.keys(this.profile.gear) as GearId[]) this.profile.gear[k] = clamp(Math.floor(this.profile.gear[k]) || 0, 0, MAX_GEAR);
+    this.adrenaline = 0;
+    this.applyGear();
     this.hp = this.maxHp;
     this.energy = this.maxEnergy;
     this.ram = this.maxRam;
+  }
+
+  /** Spends one consumable. Returns a short result line, or null when it cannot be used right now. */
+  useItem(id: ItemId): string | null {
+    const p = this.profile;
+    if (p.items[id] <= 0 || this.dead) return null;
+    if (id === 'ram') {
+      if (this.ram >= this.maxRam - 1) return null;
+      this.ram = Math.min(this.maxRam, this.ram + 60);
+      p.items.ram--;
+      return 'RAM PACK  +60 RAM';
+    }
+    if (id === 'kit') {
+      if (this.hp >= this.maxHp - 1) return null;
+      this.heal(60);
+      p.items.kit--;
+      return 'INTEGRITY KIT  +60 HP';
+    }
+    if (this.adrenaline > 0) return null;
+    this.adrenaline = 12;
+    p.items.adrenaline--;
+    return 'ADRENALINE  +25% SPEED / DAMAGE (12s)';
+  }
+
+  /** Re-skins the character from purchased gear: plates, LED intensity, blade length / colour, trail. */
+  applyGear(): void {
+    const g = this.profile.gear;
+    this.armorTiers.forEach((t, i) => { t.visible = g.armor > i; });
+    const led = 1 + 0.28 * g.core + 0.12 * g.armor;
+    this.glowMat.color.setRGB(0.1 * led, 1.6 * led, 2.2 * led);
+    this.glow2Mat.color.setRGB(2.2 * led, 0.2 * led, 1.7 * led);
+    this.armorMat.emissiveIntensity = 0.8 + 0.45 * g.armor;
+    this.gearLight = 2 * g.core + 1.5 * g.armor;
+    const tint = BLADE_TINT[g.laser];
+    this.bladeMat.color.setRGB(tint[0], tint[1], tint[2]);
+    this.trailColor.setRGB(tint[0], tint[1], tint[2]);
+    this.trailHex = new THREE.Color(Math.min(1, tint[0] * 0.3), Math.min(1, tint[1] * 0.3), Math.min(1, tint[2] * 0.3)).getHex();
+    (this.bladeGlow.material as THREE.MeshBasicMaterial).color.setRGB(tint[0] * 0.28, tint[1] * 0.28, tint[2] * 0.28);
+    const len = 1 + 0.14 * g.laser;
+    this.blade.scale.z = len;
+    this.bladeGlow.scale.z = len;
+    this.blade.position.z = 0.2 + 0.8 * len;
+    this.bladeGlow.position.z = this.blade.position.z;
+    this.bladeBase = 1 + 0.12 * g.laser;
+    this.shieldMesh.scale.setScalar(1 + 0.06 * g.shield);
+    this.shieldMat.color.setRGB(0.1 + 0.2 * g.shield, 1.2, 2.2 - 0.2 * g.shield);
+  }
+
+  /** Bolt colour variant for the current laser tier. */
+  get boltVariant(): 'cyan' | 'magenta' | 'red' | 'gold' {
+    const l = this.profile.gear.laser;
+    return l >= 4 ? 'magenta' : l >= 2 ? 'cyan' : 'gold';
   }
 
   // ───────────────────────────── model ─────────────────────────────
 
   private buildModel(): void {
     const dark = new THREE.MeshStandardMaterial({ color: 0x141826, roughness: 0.3, metalness: 0.9, envMapIntensity: 1.5 });
-    const armor = new THREE.MeshStandardMaterial({ color: 0x232c52, roughness: 0.25, metalness: 0.95, emissive: 0x002a44, emissiveIntensity: 0.8, envMapIntensity: 1.6 });
+    const armor = this.armorMat;
     const cloth = new THREE.MeshStandardMaterial({ color: 0x0d1020, roughness: 0.7, metalness: 0.2 });
-    const glow = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.1, 1.6, 2.2) });
-    const glow2 = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.2, 1.7) });
+    const glow = this.glowMat;
+    const glow2 = this.glow2Mat;
     const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh => {
       const m = new THREE.Mesh(geo, mat);
       m.position.set(x, y, z);
@@ -242,6 +341,37 @@ export class Player {
     spine.add(mesh(new THREE.BoxGeometry(0.2, 0.025, 0.2), glow, 0.31, 0.62, 0));
     spine.add(mesh(new THREE.BoxGeometry(0.2, 0.025, 0.2), glow, -0.31, 0.62, 0));
     hips.add(spine);
+
+    // Armour tiers (bought in the shop): each one adds visible plating.
+    const tier = (parent: THREE.Group): THREE.Group => { const t = grp(); t.visible = false; parent.add(t); this.armorTiers.push(t); return t; };
+    const t1 = tier(spine); // reinforced pauldrons
+    for (const sx of [-1, 1]) {
+      t1.add(mesh(new THREE.BoxGeometry(0.2, 0.07, 0.26), dark, sx * 0.4, 0.62, 0));
+      t1.add(mesh(new THREE.BoxGeometry(0.2, 0.02, 0.22), glow, sx * 0.4, 0.66, 0));
+    }
+    const t2 = tier(spine); // chest plate + abdomen guard
+    t2.add(mesh(new THREE.BoxGeometry(0.5, 0.22, 0.08), dark, 0, 0.42, 0.17));
+    t2.add(mesh(new THREE.BoxGeometry(0.3, 0.03, 0.09), glow2, 0, 0.42, 0.2));
+    t2.add(mesh(new THREE.BoxGeometry(0.34, 0.14, 0.1), dark, 0, 0.12, 0.12));
+    const t3 = tier(spine); // shoulder spikes
+    for (const sx of [-1, 1]) {
+      t3.add(mesh(new THREE.ConeGeometry(0.05, 0.26, 6).translate(0, 0.13, 0), glow2, sx * 0.44, 0.64, 0));
+      t3.add(mesh(new THREE.ConeGeometry(0.035, 0.18, 6).rotateZ(-sx * Math.PI / 2).translate(sx * 0.09, 0, 0), dark, sx * 0.46, 0.58, 0.1));
+    }
+    const t4 = tier(spine); // back-mounted reactor wings
+    for (const sx of [-1, 1]) {
+      const wing = mesh(new THREE.BoxGeometry(0.04, 0.5, 0.18), dark, sx * 0.2, 0.46, -0.34);
+      wing.rotation.z = sx * -0.35;
+      t4.add(wing);
+      const strip = mesh(new THREE.BoxGeometry(0.02, 0.44, 0.04), glow, sx * 0.2, 0.46, -0.44);
+      strip.rotation.z = sx * -0.35;
+      t4.add(strip);
+    }
+    const t5 = tier(spine); // halo crown ring + horns
+    const ring = mesh(new THREE.TorusGeometry(0.26, 0.018, 6, 24).rotateX(Math.PI / 2), glow, 0, 0.98, 0);
+    ring.castShadow = false;
+    t5.add(ring);
+    for (const sx of [-1, 1]) t5.add(mesh(new THREE.BoxGeometry(0.05, 0.3, 0.05), glow2, sx * 0.26, 0.82, 0));
 
     // Head with LED visor
     const head = grp(0, 0.68, 0);
@@ -279,9 +409,9 @@ export class Player {
     this.swordPivot.position.set(0, -0.32, 0.02);
     const hilt = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.26, 8), dark, 0, 0, 0.08);
     hilt.rotation.x = Math.PI / 2;
-    this.blade = mesh(new THREE.BoxGeometry(0.06, 0.06, 1.6), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 2.6, 3.2) }), 0, 0, 1.0);
+    this.blade = mesh(new THREE.BoxGeometry(0.06, 0.06, 1.6), this.bladeMat, 0, 0, 1.0);
     this.blade.castShadow = false;
-    const bladeGlow = mesh(new THREE.BoxGeometry(0.18, 0.18, 1.7), new THREE.MeshBasicMaterial({ color: new THREE.Color(0, 0.7, 1.2), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }), 0, 0, 1.0);
+    const bladeGlow = this.bladeGlow = mesh(new THREE.BoxGeometry(0.18, 0.18, 1.7), new THREE.MeshBasicMaterial({ color: new THREE.Color(0, 0.7, 1.2), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }), 0, 0, 1.0);
     bladeGlow.castShadow = false;
     this.swordPivot.add(hilt, this.blade, bladeGlow);
     aR.elbow.add(this.swordPivot);
@@ -359,6 +489,7 @@ export class Player {
     this.ram = this.maxRam;
     this.shieldHp = 0;
     this.shieldTime = 0;
+    this.adrenaline = 0;
     this.attackT = -1;
     this.comboIdx = 0;
     this.comboWindow = 0;
@@ -394,7 +525,7 @@ export class Player {
 
   takeDamage(amount: number, from?: THREE.Vector3): boolean {
     if (this.dead || this.invuln > 0 || this.dashing > 0) return false;
-    let dmg = amount;
+    let dmg = amount * this.armorFactor;
     if (this.shieldHp > 0) {
       const absorbed = Math.min(this.shieldHp, dmg);
       this.shieldHp -= absorbed;
@@ -408,6 +539,7 @@ export class Player {
     if (dmg > 0) {
       this.hp -= dmg;
       this.hurtT = 0.5;
+      this.ctx.progress.onPlayerHurt();
       this.ctx.audio.hurt();
       this.ctx.shake(0.35);
       this.ctx.gfx.hurt = 1;
@@ -445,7 +577,8 @@ export class Player {
       this.shieldTime -= dt;
       if (this.shieldTime <= 0) this.shieldHp = 0;
     }
-    this.energy = Math.min(this.maxEnergy, this.energy + dt * 7);
+    this.energy = Math.min(this.maxEnergy, this.energy + dt * this.energyRegen);
+    this.adrenaline = Math.max(0, this.adrenaline - dt);
     this.ram = Math.min(this.maxRam, this.ram + dt * (3 + this.profile.up.ram * 0.8));
     this.shieldMesh.visible = this.shieldHp > 0;
     if (this.shieldMesh.visible) {
@@ -513,8 +646,14 @@ export class Player {
     if ((input.consume('shoot') || input.isHeld('shoot')) && this.shotCd <= 0 && this.dashing <= 0) this.shoot();
 
     // Integrate
-    this.pos.x += this.vel.x * dt;
-    this.pos.z += this.vel.z * dt;
+    // Sub-stepped horizontal move + collision so a dash on a slow frame can't tunnel through thin fences.
+    const steps = Math.min(6, Math.max(1, Math.ceil((Math.hypot(this.vel.x, this.vel.z) * dt) / 0.4)));
+    let collided = false;
+    for (let i = 0; i < steps; i++) {
+      this.pos.x += (this.vel.x * dt) / steps;
+      this.pos.z += (this.vel.z * dt) / steps;
+      if (city.resolve(this.pos, CFG.playerRadius)) collided = true;
+    }
     this.pos.y += this.vel.y * dt;
     if (this.pos.y <= 0) {
       if (!this.grounded && this.vel.y < -6) {
@@ -528,7 +667,7 @@ export class Player {
     } else {
       this.grounded = false;
     }
-    if (city.resolve(this.pos, CFG.playerRadius)) {
+    if (collided) {
       this.vel.x *= 0.85;
       this.vel.z *= 0.85;
     }
@@ -537,7 +676,7 @@ export class Player {
       this.facing = this.lerpAngle(this.facing, Math.atan2(wish.x, wish.z), Math.min(1, dt * 14));
     }
 
-    this.light.intensity = 12 + Math.sin(this.animT * 4) * 2 + (this.dashing > 0 ? 16 : 0);
+    this.light.intensity = 12 + this.gearLight + Math.sin(this.animT * 4) * 2 + (this.dashing > 0 ? 16 : 0) + (this.adrenaline > 0 ? 6 : 0);
     this.animate(dt, wishLen);
   }
 
@@ -578,7 +717,8 @@ export class Player {
     const f = this.facingDir(new THREE.Vector3());
     const origin = new THREE.Vector3(this.pos.x, 1.2, this.pos.z);
     let hits = 0;
-    for (const e of ctx.enemies.list) {
+    // Snapshot: damageEnemy() may kill (and splice) enemies from the live list while we iterate.
+    for (const e of [...ctx.enemies.list]) {
       if (e.dead) continue;
       const dx = e.pos.x - this.pos.x;
       const dz = e.pos.z - this.pos.z;
@@ -608,7 +748,7 @@ export class Player {
     const dir = this.aimDir(new THREE.Vector3(), 34, 0.6);
     this.facing = this.lerpAngle(this.facing, Math.atan2(dir.x, dir.z), 0.6);
     const o = new THREE.Vector3(this.pos.x + dir.x * 0.9, 1.35, this.pos.z + dir.z * 0.9);
-    this.ctx.combat.fireBolt(o, dir, { friendly: true, dmg: 13 * this.damageMult, speed: 62, life: 0.9, variant: 'gold' });
+    this.ctx.combat.fireBolt(o, dir, { friendly: true, dmg: 13 * this.damageMult, speed: 62, life: 0.9, variant: this.boltVariant });
     this.ctx.fx.burst(o, { color: 0xffe08a, color2: 0xffffff, count: 6, speed: 6, life: 0.14, size: 0.3, dir, cone: 0.4 });
     this.ctx.audio.shot();
     this.vel.x -= dir.x * 1.0;
@@ -692,6 +832,13 @@ export class Player {
     this.thruster.scale.y = 1 + run * 0.8;
     const flick = this.invuln > 0 && this.dashing <= 0 && Math.floor(this.animT * 30) % 2 === 0;
     this.model.visible = !flick;
-    this.blade.scale.x = this.blade.scale.y = 1;
+    this.blade.scale.x = this.blade.scale.y = this.bladeBase;
+    this.bladeGlow.scale.x = this.bladeGlow.scale.y = this.bladeBase;
+    // Evolving sword trail: from the second laser tier the swing sheds blade-coloured sparks along its length.
+    if (this.attackT >= 0 && this.profile.gear.laser > 0) {
+      const len = 0.8 + 1.5 * this.blade.scale.z;
+      const f = this.facingDir(this.tmp);
+      this.ctx.fx.burst(this.tmp2.set(this.pos.x + f.x * len * 0.6, 1.2, this.pos.z + f.z * len * 0.6), { color: this.trailHex, color2: 0xffffff, count: 1 + this.profile.gear.laser, speed: 2.5, life: 0.3 + 0.06 * this.profile.gear.laser, size: 0.2 + 0.03 * this.profile.gear.laser, drag: 3 });
+    }
   }
 }

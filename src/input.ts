@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { IS_TOUCH } from './config';
 
-export type Action = 'jump' | 'dash' | 'attack' | 'shoot' | 'emp' | 'shield' | 'burst' | 'interact' | 'pause';
+export type Action = 'jump' | 'dash' | 'attack' | 'shoot' | 'emp' | 'shield' | 'burst' | 'interact' | 'pause' | 'shop' | 'offer' | 'item1' | 'item2' | 'item3';
 
 const KEY_MAP: Record<string, Action> = {
   Space: 'jump',
@@ -16,6 +16,11 @@ const KEY_MAP: Record<string, Action> = {
   Enter: 'interact',
   Backquote: 'interact',
   KeyP: 'pause',
+  KeyB: 'shop',
+  KeyG: 'offer',
+  Digit1: 'item1',
+  Digit2: 'item2',
+  Digit3: 'item3',
 };
 
 export class Input {

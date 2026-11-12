@@ -13,6 +13,10 @@ import type { Enemy, EnemyManager } from './enemies';
 import type { MissionManager, Mission } from './systems/missions';
 import type { HackingSystem } from './systems/hacking';
 import type { HUD } from './ui/hud';
+import type { Shop } from './systems/shop';
+import type { AdService } from './systems/ads';
+import type { DailyStreak } from './systems/daily';
+import type { Progress } from './systems/progress';
 
 export interface GameState {
   time: number;
@@ -77,9 +81,16 @@ export interface GameContext {
   missions: MissionManager;
   hacking: HackingSystem;
   ui: HUD;
+  shop: Shop;
+  ads: AdService;
+  daily: DailyStreak;
+  progress: Progress;
   state: GameState;
   /** Camera yaw in radians (movement is relative to it). */
   camYaw: number;
+  /** Freezes the world and routes input to a DOM panel (shop, ads, daily reward). Calls nest. */
+  modal: { open(): void; close(): void; readonly depth: number };
+  save(): void;
   shake(amount: number): void;
   hitStop(seconds: number): void;
 }

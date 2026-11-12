@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { GameContext, HackMode, HackTarget } from '../context';
-import { UPGRADE_INFO, type UpgradeId } from '../player/player';
+import { UPGRADE_INFO, type ItemId, type UpgradeId } from '../player/player';
 import { Minigame } from '../ui/minigame';
 import type { Vehicle } from '../world/traffic';
 
@@ -10,7 +10,7 @@ const RANGE = 14;
 const SCAN_RADIUS = 46;
 const COST: Record<'scan' | HackMode, number> = { scan: 5, hack: 20, override: 35, interrogate: 15 };
 
-const COMMANDS = ['help', 'scan', 'hack', 'override', 'interrogate', 'talk', 'status', 'missions', 'accept', 'abort', 'upgrade', 'clear', 'exit'];
+const COMMANDS = ['help', 'scan', 'hack', 'override', 'interrogate', 'talk', 'status', 'missions', 'accept', 'abort', 'upgrade', 'shop', 'use', 'ram', 'achievements', 'daily', 'clear', 'exit'];
 
 /**
  * Deep hacking: a retro-futurist command console. Commands work on anything scannable near the player
@@ -70,6 +70,7 @@ export class HackingSystem {
       { label: 'SCAN', cmd: '/scan', submit: true },
       { label: 'MISSIONS', cmd: '/missions', submit: true },
       { label: 'STATUS', cmd: '/status', submit: true },
+      { label: 'SHOP', cmd: '/shop', submit: true },
       { label: 'UPGRADE', cmd: '/upgrade', submit: true },
       { label: 'HELP', cmd: '/help', submit: true },
       { label: 'EXIT', cmd: '/exit', submit: true },
@@ -175,6 +176,11 @@ export class HackingSystem {
       case 'accept': this.cmdAccept(arg); break;
       case 'abort': this.ctx.missions.abort(); ui.console.print('>> MISSION ABORTED', 'warn'); break;
       case 'upgrade': this.cmdUpgrade(arg); break;
+      case 'shop': this.close(); this.ctx.shop.open(); break;
+      case 'daily': this.close(); this.ctx.daily.open(); break;
+      case 'use': this.cmdUse(arg); break;
+      case 'ram': await this.cmdRam(); break;
+      case 'achievements': this.cmdAchievements(); break;
       case 'clear': ui.console.clear(); break;
       case 'exit': case 'quit': case 'close': this.close(); break;
       default: ui.console.print(`?? UNKNOWN COMMAND "${cmd}". Type /help`, 'err');
@@ -192,6 +198,10 @@ export class HackingSystem {
     c.print('/missions  /accept n   mission board / take a contract', 'out');
     c.print('/abort                 abandon the active mission', 'out');
     c.print('/upgrade [stat]        spend skill points', 'out');
+    c.print('/shop  /daily          black market · daily login reward', 'out');
+    c.print('/use ram|kit|adr       consume an item (hotkeys 1-3)', 'out');
+    c.print('/ram                   watch an ad: instant full RAM', 'out');
+    c.print('/achievements          unlocked trophies', 'out');
     c.print('/status  /clear  /exit', 'out');
     c.print('Targets: NPC-xx citizens · CAR/FLY-xx vehicles · TRM-xx kiosks · DOOR · CAM · mission cores', 'dim');
     c.print('Omit [id] to auto-target the nearest valid target in range (14m).', 'dim');
@@ -344,6 +354,37 @@ export class HackingSystem {
     c.print(m.briefing, 'out');
     const hint = missions.hint();
     if (hint) c.print(hint, 'dim');
+  }
+
+  private cmdUse(arg: string | undefined): void {
+    const c = this.ctx.ui.console;
+    const map: Record<string, ItemId> = { ram: 'ram', kit: 'kit', adr: 'adrenaline', adrenaline: 'adrenaline' };
+    const id = arg ? map[arg.toLowerCase()] : undefined;
+    if (!id) { c.print('!! USAGE: /use <ram|kit|adr>', 'err'); return; }
+    const msg = this.ctx.player.useItem(id);
+    if (msg) { c.print(`>> ${msg}`, 'ok'); this.ctx.audio.pickup(); } else { c.print('!! NOTHING TO USE (empty stock or already full)', 'err'); this.ctx.audio.error(); }
+  }
+
+  private async cmdRam(): Promise<void> {
+    const { ads, player, ui } = this.ctx;
+    const c = ui.console;
+    const st = ads.status('ram_refill');
+    if (!st.ok) { c.print(st.wait > 0 ? `!! NEXT BROADCAST IN ${st.wait}s` : '!! NO BROADCASTS LEFT THIS SESSION', 'warn'); return; }
+    this.busy = true;
+    c.blur();
+    await ads.request('ram_refill', {
+      onAdCompleted: () => { player.ram = player.maxRam; c.print('>> RAM FULLY RECHARGED', 'ok'); },
+      onAdFailed: () => c.print('!! BROADCAST NOT COMPLETED — NO REWARD', 'warn'),
+    });
+    this.busy = false;
+    if (this.open_) c.focus();
+  }
+
+  private cmdAchievements(): void {
+    const c = this.ctx.ui.console;
+    const list = this.ctx.progress.list();
+    c.print(`── ACHIEVEMENTS ${list.filter((a) => a.done).length}/${list.length} ───────────────`, 'sys');
+    for (const a of list) c.print(`[${a.done ? 'x' : ' '}] ${a.name.padEnd(20)} ${a.desc}  (¢${a.reward})`, a.done ? 'ok' : 'dim');
   }
 
   private cmdUpgrade(arg: string | undefined): void {

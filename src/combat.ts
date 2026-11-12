@@ -210,8 +210,8 @@ export class Combat {
 
   private castShield(): void {
     const { player, audio, fx } = this.ctx;
-    player.shieldHp = 70;
-    player.shieldTime = 8;
+    player.shieldHp = player.shieldCap;
+    player.shieldTime = player.shieldDuration;
     audio.shield();
     this.ringFx(this.boltTmp.set(player.pos.x, 0.2, player.pos.z), 0x33ffcc, 4, 0.5);
     fx.burst(new THREE.Vector3(player.pos.x, 1, player.pos.z), { color: 0x33ffcc, count: 36, speed: 7, life: 0.6, size: 0.25 });
@@ -238,6 +238,7 @@ export class Combat {
     const crit = opts.crit ?? Math.random() < 0.18;
     const total = Math.max(1, Math.round(dmg * (crit ? 2 : 1)));
     e.hit(total, knock);
+    this.ctx.progress.registerHit();
     const at = this.tmp.set(e.pos.x, e.height * 0.6, e.pos.z);
     fx.burst(at, crit
       ? { color: 0xffee33, color2: 0xff2bd6, count: 34, speed: 13, life: 0.55, size: 0.34, gravity: 12 }
@@ -311,7 +312,7 @@ export class Combat {
           break;
         }
         if (p.friendly) {
-          for (const e of enemies.list) {
+          for (const e of [...enemies.list]) {
             if (e.dead || p.hit.has(e)) continue;
             const dx = e.pos.x - pos.x;
             const dz = e.pos.z - pos.z;
@@ -362,12 +363,15 @@ export class Combat {
   slashFx(origin: THREE.Vector3, facing: number, range: number, idx: number): void {
     const f = this.acquire(true);
     if (!f) return;
+    range *= 1 + 0.04 * this.ctx.player.profile.gear.laser;
     f.mesh.geometry = this.slashGeos[idx];
     f.active = true;
     f.t = 0;
     f.dur = 0.22;
     f.maxR = range;
-    f.mat.color.setRGB(idx === 2 ? 3 : 0.4, idx === 2 ? 0.8 : 2.6, idx === 2 ? 2.5 : 3.2);
+    const tc = this.ctx.player.trailColor;
+    if (idx === 2) f.mat.color.setRGB(tc.r * 0.9 + 0.5, tc.g * 0.4 + 0.5, tc.b * 0.8 + 0.5);
+    else f.mat.color.copy(tc);
     f.mat.opacity = 0.9;
     f.obj.position.set(origin.x, 1.0, origin.z);
     f.obj.rotation.y = facing - Math.PI / 2;
