@@ -242,7 +242,14 @@ export class Progress {
         this.ctx.player.addXp(o.xp);
         this.ctx.ui.toast(`REWARD DOUBLED  +¢${o.credits}  +${o.xp} XP`, 'ok');
       },
-      onAdFailed: () => this.ctx.ui.toast('AD NOT COMPLETED — NO BONUS', 'warn'),
+      onAdFailed: () => {
+        this.ctx.ui.toast('AD NOT COMPLETED — NO BONUS', 'warn');
+        // Keep the offer alive for a retry if the ad simply wasn't available / was skipped.
+        if (this.ctx.engine.state === 'playing' || this.ctx.engine.state === 'paused') {
+          this.offer = { ...o, t: Math.max(6, o.t) };
+          this.offerEl.classList.remove('hidden');
+        }
+      },
     });
   }
 

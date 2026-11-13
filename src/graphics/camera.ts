@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { GameContext } from '../context';
+import { REDUCED_MOTION } from '../config';
 
 const BASE_DIST = 9.5;
 
@@ -12,6 +13,9 @@ export class ChaseCamera {
   private goal = new THREE.Vector3();
   private dir = new THREE.Vector3();
   private desired = new THREE.Vector3();
+  private shakeOff = new THREE.Vector3();
+  private shakeRoll = 0;
+  private shakeT = 0;
 
   constructor(private camera: THREE.PerspectiveCamera, private ctx: GameContext) {}
 
@@ -36,17 +40,26 @@ export class ChaseCamera {
 
     this.desired.copy(target).addScaledVector(this.dir, this.dist);
     this.desired.y = Math.max(0.6, this.desired.y);
+    // Remove last frame's shake offset first so it never feeds back into the follow smoothing.
+    camera.position.sub(this.shakeOff);
     if (snap) camera.position.copy(this.desired);
     else camera.position.lerp(this.desired, 1 - Math.exp(-rawDt * 24));
     camera.lookAt(target.x, target.y + 0.2, target.z);
 
-    const trauma = engine.trauma;
-    if (trauma > 0) {
+    // Trauma shake: smooth, allocation-free layered sines (no per-frame random jitter), quadratic falloff.
+    const trauma = REDUCED_MOTION ? 0 : engine.trauma;
+    if (trauma > 0.002) {
+      this.shakeT += rawDt * 26;
       const s = trauma * trauma;
-      camera.position.x += (Math.random() - 0.5) * 1.1 * s;
-      camera.position.y += (Math.random() - 0.5) * 1.1 * s;
-      camera.position.z += (Math.random() - 0.5) * 1.1 * s;
-      camera.rotateZ((Math.random() - 0.5) * 0.06 * s);
+      const t = this.shakeT;
+      const n = (f: number, p: number): number => Math.sin(t * f + p) * 0.65 + Math.sin(t * f * 2.31 + p * 1.7) * 0.35;
+      this.shakeOff.set(n(1.0, 0.0) * 0.5 * s, n(1.27, 2.1) * 0.42 * s, n(0.83, 4.2) * 0.4 * s);
+      this.shakeRoll = n(1.63, 1.3) * 0.035 * s;
+      camera.position.add(this.shakeOff);
+      camera.rotateZ(this.shakeRoll);
+    } else if (this.shakeOff.lengthSq() > 0) {
+      this.shakeOff.set(0, 0, 0);
+      this.shakeRoll = 0;
     }
 
     const fovTarget = 70 + (player.dashing > 0 ? 12 : 0) + Math.min(5, Math.hypot(player.vel.x, player.vel.z) * 0.3);

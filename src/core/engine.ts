@@ -51,6 +51,7 @@ export class Engine {
   qualityLog: string[] = [];
 
   private systems: System[] = [];
+  private failed = new Set<string>();
   private last = 0;
   private running = false;
   private hitStopT = 0;
@@ -117,7 +118,11 @@ export class Engine {
     this.trauma = Math.max(0, this.trauma - rawDt * 1.9);
 
     for (const s of this.systems) {
-      if (s.states.includes(this.state)) s.update(dt, rawDt);
+      if (!s.states.includes(this.state)) continue;
+      // One faulty system must never freeze the loop (and with it input / HUD): isolate and report once.
+      try { s.update(dt, rawDt); } catch (e) {
+        if (!this.failed.has(s.name)) { this.failed.add(s.name); console.error(`[engine] system "${s.name}" threw`, e); }
+      }
     }
     this.renderCb(dt, rawDt);
     this.monitorQuality(realDt);

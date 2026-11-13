@@ -300,6 +300,8 @@ export class AdService {
           this.ctx.progress.meta.data.counters.adsWatched++;
           this.ctx.progress.meta.save();
           try { hooks.onAdCompleted?.(placement); this.onAdCompleted(placement); } catch (e) { console.error(e); }
+          // Persist the reward right away so a closed tab can never lose (or duplicate) it.
+          this.ctx.save();
         } else {
           try { hooks.onAdFailed?.(placement, reason); this.onAdFailed(placement, reason); } catch (e) { console.error(e); }
         }

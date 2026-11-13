@@ -232,6 +232,15 @@ export class Player {
     this.profile.gear = { ...d.gear, ...(p.gear ?? {}) };
     this.profile.items = { ...d.items, ...(p.items ?? {}) };
     for (const k of Object.keys(this.profile.gear) as GearId[]) this.profile.gear[k] = clamp(Math.floor(this.profile.gear[k]) || 0, 0, MAX_GEAR);
+    // A hand-edited / corrupted save must never break the session: coerce every number into a sane range.
+    const pr = this.profile;
+    const num = (v: unknown, lo: number, hi: number, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? clamp(Math.floor(v), lo, hi) : d);
+    pr.level = num(pr.level, 1, 999, 1);
+    pr.xp = num(pr.xp, 0, 1e9, 0);
+    pr.credits = num(pr.credits, 0, 1e9, d.credits);
+    pr.skillPoints = num(pr.skillPoints, 0, 9999, 0);
+    for (const k of Object.keys(pr.up) as UpgradeId[]) pr.up[k] = num(pr.up[k], 0, 10, 0);
+    for (const k of Object.keys(pr.items) as ItemId[]) pr.items[k] = num(pr.items[k], 0, 9, 0);
     this.adrenaline = 0;
     this.applyGear();
     this.hp = this.maxHp;
@@ -406,7 +415,8 @@ export class Player {
       this.hurtT = 0.5;
       this.ctx.progress.onPlayerHurt();
       this.ctx.audio.hurt();
-      this.ctx.shake(0.35);
+      // Hard hits shake harder (0.2 .. 0.6); chip damage stays subtle.
+      this.ctx.shake(Math.min(0.6, 0.15 + dmg / 70));
       this.ctx.gfx.hurt = 1;
       this.ctx.gfx.glitch = Math.max(this.ctx.gfx.glitch, 0.35);
       this.ctx.ui.flashDamage();

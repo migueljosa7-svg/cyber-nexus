@@ -4,6 +4,9 @@ export const IS_TOUCH: boolean =
   (window.matchMedia('(pointer: coarse)').matches ||
     ('ontouchstart' in window && !window.matchMedia('(hover: hover)').matches));
 
+/** Players who asked their OS for less motion get no camera shake. */
+export const REDUCED_MOTION: boolean = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 /** City grid. Roads are centred on multiples of S; a chunk spans [cx*S, (cx+1)*S) on both axes. */
 export const CITY = {
   S: 64,

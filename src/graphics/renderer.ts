@@ -319,7 +319,7 @@ export class GfxRenderer {
     this.scene.environmentIntensity = 0.45 + 0.5 * day;
     this.renderer.toneMappingExposure = 0.95 - 0.1 * day;
     this.starMat.opacity = 0.8 * (1 - day);
-    this.stars.visible = day < 0.97;
+    this.stars.visible = this.starMat.opacity > 0.01;
     const bloomMul = this.bloomMode === 'full' ? 1 : 0.6;
     this.bloom.strength = this.baseBloom * bloomMul * (1 - 0.5 * day);
     this.sunAng = t * Math.PI * 2;
@@ -358,7 +358,8 @@ export class GfxRenderer {
   /** Keeps the (small) character shadow frustum centred on the action. */
   followShadow(target: THREE.Vector3): void {
     this.sun.target.position.set(target.x, 0, target.z);
-    const h = Math.max(0.25, this.sunHeight);
+    // Smooth max (no kink when the sun crosses the horizon) keeps the shadow direction continuous.
+    const h = 0.25 + (0.75 * Math.log1p(Math.exp(6 * this.sunHeight))) / 6;
     this.sun.position.set(target.x + Math.cos(this.sunAng) * 38, 26 + 30 * h, target.z + 18);
     this.sun.target.updateMatrixWorld();
   }

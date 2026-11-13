@@ -90,7 +90,7 @@ export interface GameContext {
   camYaw: number;
   /** Freezes the world and routes input to a DOM panel (shop, ads, daily reward). Calls nest. */
   modal: { open(): void; close(): void; readonly depth: number };
-  save(): void;
+  save(force?: boolean): void;
   shake(amount: number): void;
   hitStop(seconds: number): void;
 }

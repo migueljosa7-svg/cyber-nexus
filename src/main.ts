@@ -315,6 +315,9 @@ class Game implements GameContext {
     window.addEventListener('keydown', (e) => { if (e.code === 'F3') { e.preventDefault(); this.toggleStats(); } });
 
     this.progress.bindEvents();
+    // Persist on every way a tab can disappear (mobile browsers often skip beforeunload).
+    window.addEventListener('pagehide', () => this.save());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.save(); });
     const ev = this.engine.events;
     ev.on('stateChanged', ({ from, to }) => {
       if (to === 'playing') this.ads.gameplay(true);
@@ -386,8 +389,8 @@ class Game implements GameContext {
     }
   }
 
-  save(): void {
-    if (!this.player || this.engine.state === 'menu' || this.engine.state === 'loading') return;
+  save(force = false): void {
+    if (!this.player || (!force && (this.engine.state === 'menu' || this.engine.state === 'loading'))) return;
     const data: SaveData = { profile: this.player.serialize(), kills: this.state.kills, hacks: this.state.hacks, missionsDone: this.state.missionsDone };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch { /* storage unavailable */ }
   }
@@ -506,7 +509,7 @@ class Game implements GameContext {
         this.player.profile.credits -= lost;
         this.lastLost = lost;
         this.refreshRescueButton();
-        this.save();
+        this.save(true);
         this.ui.showGameOver({ level: this.player.profile.level, kills: this.state.kills, hacks: this.state.hacks, missions: this.state.missionsDone, creditsLost: lost });
       },
     });
