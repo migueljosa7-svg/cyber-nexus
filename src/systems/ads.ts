@@ -243,13 +243,16 @@ export class AdService {
       this.ready = Promise.resolve();
     } else {
       this.provider = new UnavailableProvider();
-      this.ready = loadSdk(this.sdk).then((ok) => {
-        if (!ok) return;
-        this.provider = this.sdk === 'crazygames' ? new CrazyGamesProvider() : this.sdk === 'poki' ? new PokiProvider() : new AdSenseH5Provider();
-        sdkLoadingFinished(this.sdk);
-      });
+      // The game never waits on this: until it resolves (or if it fails) ads are simply unavailable.
+      this.ready = loadSdk(this.sdk).then((res) => {
+        if (res === 'ready') this.provider = this.sdk === 'crazygames' ? new CrazyGamesProvider() : this.sdk === 'poki' ? new PokiProvider() : new AdSenseH5Provider();
+        else if (res === 'disabled') this.provider = new BroadcastProvider(root, secs); // SDK present but not on its platform
+      }).catch(() => undefined);
     }
   }
+
+  /** Tells the platform the game finished loading (call once the menu is interactive). */
+  loadingFinished(): void { sdkLoadingFinished(this.sdk); }
 
   /** Platform gameplay signal (CrazyGames / Poki use it to schedule ads and analytics). */
   gameplay(playing: boolean): void { sdkGameplay(this.sdk, playing); }

@@ -12,6 +12,12 @@ npm run build      # typecheck + build de producción en /dist
 npm run preview    # sirve el build de producción
 ```
 
+## Publicación por carpeta (CrazyGames)
+
+- `npm run build` genera `dist/` con rutas **relativas** (`base: './'`): se puede subir la carpeta tal cual, desde cualquier subruta o iframe.
+- `index.html` incluye el SDK oficial de CrazyGames v3 con `async` + `onerror`, y `sdk.ts` lo espera con tiempo límite (8 s). Con adblock, sin red o si `init()` no responde, el juego arranca y se juega al 100 %: los anuncios quedan desactivados y **nunca** se concede recompensa sin anuncio. Si el SDK carga pero indica `environment: 'disabled'` (fuera de la plataforma) se usa el simulador local.
+- Resiliencia: `src/errors.ts` instala `error` / `unhandledrejection`; un fallo **durante el arranque** (o falta de WebGL2) muestra un panel de recuperación (RELOAD / RELOAD · LOW GRAPHICS) en vez de pantalla en blanco; tras el arranque los errores solo se registran. Cada sistema del bucle y el render están aislados con try/catch, y `localStorage` bloqueado se tolera.
+
 ## Cómo se juega
 
 1. Pulsa **NEW GAME**. Empiezas en una plaza con un contrato ya aceptado (registro de misión a la izquierda, marcador y minimapa).

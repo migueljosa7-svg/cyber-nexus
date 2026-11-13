@@ -53,27 +53,54 @@ function injectScript(src: string, attrs: Record<string, string> = {}, timeoutMs
   });
 }
 
-interface CrazySdk { init(): Promise<void>; game: { gameplayStart(): void; gameplayStop(): void; loadingStart?(): void; loadingStop?(): void } }
+interface CrazySdk { init(): Promise<void>; environment?: string; game: { gameplayStart(): void; gameplayStop(): void; loadingStart?(): void; loadingStop?(): void } }
 interface PokiSdkFull { init(): Promise<void>; gameLoadingFinished(): void; gameplayStart(): void; gameplayStop(): void }
 
-/** Loads and initialises the SDK. Resolves true when it is ready for ad requests. */
-export async function loadSdk(kind: SdkKind): Promise<boolean> {
+const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([p, new Promise<T>((_, rej) => window.setTimeout(() => rej(new Error('sdk timeout')), ms))]);
+
+/** Waits for a global that a (possibly still loading, possibly blocked) script should define. */
+function waitFor(test: () => unknown, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    const tick = (): void => {
+      if (test()) { resolve(true); return; }
+      if (performance.now() - t0 > ms || (w() as { __sdkBlocked?: boolean }).__sdkBlocked) { resolve(false); return; }
+      window.setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
+/**
+ * Loads and initialises the SDK. Never throws and never blocks the game for more than a few seconds:
+ *  - 'ready'    the platform SDK is usable,
+ *  - 'disabled' the SDK loaded but reports it is not running on its platform (use the local simulator),
+ *  - 'failed'   blocked (ad blocker), offline, timed out or crashed: ads are simply unavailable.
+ */
+export async function loadSdk(kind: SdkKind): Promise<'ready' | 'disabled' | 'failed'> {
   try {
     if (kind === 'crazygames') {
-      if (!(w().CrazyGames as { SDK?: unknown } | undefined)?.SDK && !(await injectScript(SDK_SCRIPTS.crazygames))) return false;
-      await (w().CrazyGames as { SDK: CrazySdk }).SDK.init();
-      return true;
+      const has = (): unknown => (w().CrazyGames as { SDK?: unknown } | undefined)?.SDK;
+      // index.html already carries the official tag; inject it ourselves only if it was stripped.
+      if (!has() && !document.querySelector(`script[src^="${SDK_SCRIPTS.crazygames}"]`)) void injectScript(SDK_SCRIPTS.crazygames);
+      if (!(await waitFor(has, 8000))) return 'failed';
+      const sdk = (w().CrazyGames as { SDK: CrazySdk }).SDK;
+      await withTimeout(sdk.init(), 8000);
+      if (sdk.environment === 'disabled') return 'disabled';
+      try { sdk.game.loadingStart?.(); } catch { /* optional */ }
+      return 'ready';
     }
     if (kind === 'poki') {
-      if (!w().PokiSDK && !(await injectScript(SDK_SCRIPTS.poki))) return false;
-      const poki = w().PokiSDK as PokiSdkFull;
-      await poki.init();
-      return true;
+      if (!w().PokiSDK && !document.querySelector(`script[src^="${SDK_SCRIPTS.poki}"]`)) void injectScript(SDK_SCRIPTS.poki);
+      if (!(await waitFor(() => w().PokiSDK, 8000))) return 'failed';
+      await withTimeout((w().PokiSDK as PokiSdkFull).init(), 8000);
+      return 'ready';
     }
     if (kind === 'adsense') {
       const client = import.meta.env.VITE_ADSENSE_CLIENT;
       if (typeof w().adBreak !== 'function') {
-        if (!client) return false;
+        if (!client) return 'failed';
         // Official H5 Games Ads bootstrap: queue calls until adsbygoogle.js has loaded.
         const q = (w().adsbygoogle = (w().adsbygoogle as unknown[] | undefined) ?? []) as unknown[];
         w().adBreak = w().adConfig = (o: unknown): void => { q.push(o); };
@@ -83,15 +110,15 @@ export async function loadSdk(kind: SdkKind): Promise<boolean> {
           'data-adbreak-test': testMode ? 'on' : 'off',
           crossorigin: 'anonymous',
         });
-        if (!ok) return false;
+        if (!ok) return 'failed';
         (w().adConfig as (o: unknown) => void)({ preloadAdBreaks: 'on', sound: 'on' });
       }
-      return true;
+      return 'ready';
     }
   } catch (e) {
     console.warn('[sdk] init failed', e);
   }
-  return false;
+  return 'failed';
 }
 
 /** Tells the platform when the player is actively playing (required by CrazyGames / Poki for ad timing). */
@@ -107,7 +134,10 @@ export function sdkGameplay(kind: SdkKind, playing: boolean): void {
   } catch { /* platform signals are best-effort */ }
 }
 
-/** Poki wants an explicit "loading finished" signal. */
+/** "Loading finished" signal (CrazyGames loadingStop, Poki gameLoadingFinished). */
 export function sdkLoadingFinished(kind: SdkKind): void {
-  try { if (kind === 'poki') (w().PokiSDK as PokiSdkFull | undefined)?.gameLoadingFinished?.(); } catch { /* best-effort */ }
+  try {
+    if (kind === 'poki') (w().PokiSDK as PokiSdkFull | undefined)?.gameLoadingFinished?.();
+    else if (kind === 'crazygames') (w().CrazyGames as { SDK?: CrazySdk } | undefined)?.SDK?.game.loadingStop?.();
+  } catch { /* best-effort */ }
 }

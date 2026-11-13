@@ -124,7 +124,9 @@ export class Engine {
         if (!this.failed.has(s.name)) { this.failed.add(s.name); console.error(`[engine] system "${s.name}" threw`, e); }
       }
     }
-    this.renderCb(dt, rawDt);
+    try { this.renderCb(dt, rawDt); } catch (e) {
+      if (!this.failed.has('render')) { this.failed.add('render'); console.error('[engine] render threw', e); }
+    }
     this.monitorQuality(realDt);
   };
 

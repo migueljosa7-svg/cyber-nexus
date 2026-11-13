@@ -23,6 +23,7 @@ import { DailyStreak } from './systems/daily';
 import { Progress } from './systems/progress';
 import { HUD } from './ui/hud';
 import { Transitions, bootLines, deathLines } from './transitions';
+import { hasWebGL2, installErrorHandlers, showFatal } from './errors';
 
 const WORLD_SEED = 20771;
 const nextFrame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
@@ -136,6 +137,13 @@ class Game implements GameContext {
 
   async boot(): Promise<void> {
     this.gfx = new GfxRenderer(this.canvas);
+    // GPU reset / tab throttling: if the context is not restored shortly, offer a clean reload instead of a frozen frame.
+    let lostT = 0;
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      lostT = window.setTimeout(() => showFatal('GRAPHICS CONTEXT LOST', 'The GPU stopped responding. Reload to continue — your progress is saved.'), 4000);
+    });
+    this.canvas.addEventListener('webglcontextrestored', () => window.clearTimeout(lostT));
     this.scene = this.gfx.scene;
     this.camera = this.gfx.camera;
     this.engine = new Engine(this.gfx);
@@ -204,6 +212,8 @@ class Game implements GameContext {
     this.ui.setLoading(1, 'READY');
     await nextFrame();
     this.ui.hideLoading();
+    window.__booted = true;
+    void this.ads.ready.then(() => this.ads.loadingFinished());
     this.engine.setState('menu');
     this.ui.showMenu(this.loadSave() !== null);
     this.engine.onRender((dt, rawDt) => {
@@ -567,4 +577,9 @@ class Game implements GameContext {
   }
 }
 
-void new Game().boot();
+installErrorHandlers();
+if (!hasWebGL2()) {
+  showFatal('WEBGL 2 UNAVAILABLE', 'Your browser or device cannot run 3D graphics. Enable hardware acceleration, update your browser or try another one.');
+} else {
+  new Game().boot().catch((e: unknown) => showFatal('SYSTEM FAILURE', `The game could not start (${e instanceof Error ? e.message : String(e)}). Try reloading, or low graphics if your device is limited.`));
+}

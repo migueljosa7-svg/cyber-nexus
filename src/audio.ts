@@ -12,7 +12,7 @@ export class AudioFX {
     if (!this.ctx) {
       const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!Ctor) return;
-      this.ctx = new Ctor();
+      try { this.ctx = new Ctor(); } catch { this.ctx = null; return; }
       this.master = this.ctx.createGain();
       this.master.gain.value = this.muted ? 0 : 0.55;
       const comp = this.ctx.createDynamicsCompressor();

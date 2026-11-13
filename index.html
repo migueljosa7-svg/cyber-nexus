@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- Dark background from the very first paint: never a white flash, even before CSS loads. -->
+    <style>html,body{margin:0;background:#02040a;color:#d8f8ff}</style>
     <title>CYBER-NEXUS: OPEN WORLD PROTOCOL — RPG Cyberpunk 3D de Mundo Abierto (Gratis en el Navegador)</title>
     <meta name="description" content="CYBER-NEXUS: OPEN WORLD PROTOCOL es un RPG de acción cyberpunk 3D de mundo abierto para navegador. Ciudad infinita, misiones procedurales, hackeo por consola, espada de energía. Gratis, en PC y móvil." />
     <meta name="keywords" content="juego 3d navegador, cyberpunk, three.js, webgl, juego de acción, hacking, arena shooter, juego online gratis, juego móvil" />
@@ -28,6 +30,15 @@
     <canvas id="game" aria-label="CYBER-NEXUS game canvas"></canvas>
     <div id="ui"></div>
     <noscript>Este juego necesita JavaScript y WebGL para funcionar.</noscript>
+    <div id="boot-fallback" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#02040a;color:#00f0ff;font:700 14px Consolas,monospace;letter-spacing:.2em;text-align:center;padding:20px">CYBER-NEXUS<br /><br />Este navegador no puede ejecutar el juego.<br />Actualiza tu navegador o prueba con Chrome / Edge / Firefox.</div>
+    <script>
+      // Shown only if the game bundle fails to execute at all (very old browser, blocked module script).
+      window.addEventListener('load', function () {
+        setTimeout(function () { if (!window.__booted && !document.querySelector('.loading,.menu')) { var f = document.getElementById('boot-fallback'); if (f) f.style.display = 'flex'; } }, 6000);
+      });
+    </script>
+    <!-- CrazyGames SDK v3. async + onerror: an ad blocker or offline network can never block or break the page. -->
+    <script async src="https://sdk.crazygames.com/crazygames-sdk-v3.js" onerror="window.__sdkBlocked=true"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
